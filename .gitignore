@@ -1,0 +1,32 @@
+# ESP-IDF build output
+build/
+
+# Managed components (auto-downloaded)
+managed_components/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Python
+__pycache__/
+*.pyc
+
+# SDK config (auto-generated from defaults)
+sdkconfig
+sdkconfig.old
+
+# Dependency lock (auto-generated)
+dependencies.lock
+
+# Flash args (auto-generated)
+flasher_args.json
+
+# Submodule — reference only, not built from here
+ESP32-S3-Touch-LCD-4.3C/
