@@ -232,14 +232,27 @@ esp_err_t motor_read_position(motor_t *m)
         return ret;
     }
 
-    /* [addr][0x36][B3][B2][B1][B0][0x6B] = 7 bytes */
-    if (n >= 7 && rx[1] == 0x36) {
-        m->current_pos = ((int32_t)rx[2]<<24)|((int32_t)rx[3]<<16)
-                        |((int32_t)rx[4]<<8)|(int32_t)rx[5];
+    /* Dump raw response for diagnosis */
+    {
+        char d[64]={0}; int o=0;
+        for(int i=0;i<(int)n&&o<55;i++) o+=snprintf(d+o,sizeof(d)-o,"%02X ",rx[i]);
+        ESP_LOGI(TAG, "%s pos RX %d B: %s", m->name, (int)n, d);
+    }
+
+    /* [addr][0x36][sign][B3][B2][B1][B0][0x6B]
+     * sign: 0x00=+, 0x01=-
+     * position: 32-bit encoder ticks, big-endian, 65536 ticks/rev
+     * Convert to microsteps: 3200 µsteps/rev ÷ 65536 ticks/rev */
+    if (n >= 8 && rx[1] == 0x36 && rx[n-1] == 0x6B) {
+        uint32_t raw = ((uint32_t)rx[3]<<24)|((uint32_t)rx[4]<<16)
+                      |((uint32_t)rx[5]<<8) |(uint32_t)rx[6];
+        int32_t enc_pos = (rx[2] == 0x01) ? -(int32_t)raw : (int32_t)raw;
+        /* encoder ticks → microsteps */
+        m->current_pos = (int32_t)(((int64_t)enc_pos * 3200 + 32768) / 65536);
     } else {
         char d[64]={0}; int o=0;
         for(int i=0;i<(int)n&&o<55;i++) o+=snprintf(d+o,sizeof(d)-o,"%02X ",rx[i]);
-        ESP_LOGW(TAG, "%s pos parse fail — got %d B: %s", m->name, (int)n, d);
+        ESP_LOGW(TAG, "%s pos parse fail — %d B: %s", m->name, (int)n, d);
     }
     return ESP_OK;
 }
