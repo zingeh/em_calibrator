@@ -10,7 +10,7 @@
 #include "rgb_lcd_port.h"
 #include "gt911.h"
 #include "io_extension.h"
-#include "modbus_485.h"
+#include "rs485.h"
 #include "motor.h"
 #include "ui.h"
 #include "lvgl_port.h"
@@ -46,7 +46,7 @@ void app_main(void)
     esp_lcd_panel_handle_t panel = waveshare_esp32_s3_rgb_lcd_init();
 
     /* ---------- RS485 bus ---------- */
-    ESP_ERROR_CHECK(modbus_485_init(RS485_UART_PORT,
+    ESP_ERROR_CHECK(rs485_init(RS485_UART_PORT,
                                      RS485_TX_PIN, RS485_RX_PIN,
                                      RS485_DE_PIN, RS485_BAUD));
 
@@ -110,7 +110,7 @@ void app_main(void)
     for (int i = 0; i < 5; i++)
         motor_probe(motors[i]);
 
-    motor_start_poll_task(motors, 5, UI_REFRESH_MS);
+    motor_start_poll_task(motors, 5, 100);  /* poll every 100ms for snappy button response */
 
     ESP_LOGI(TAG, "Init complete — EM Calibrator ready");
 }

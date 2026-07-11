@@ -14,10 +14,10 @@
 #define APP_VERSION    "v1.0.0"
 
 /* ---- RS485 bus ---- */
-#define RS485_UART_PORT    UART_NUM_1
-#define RS485_TX_PIN       GPIO_NUM_43
-#define RS485_RX_PIN       GPIO_NUM_44
-#define RS485_DE_PIN       GPIO_NUM_13
+#define RS485_UART_PORT    UART_NUM_0        /* Board RS485 is wired to UART0     */
+#define RS485_TX_PIN       GPIO_NUM_44       /* GPIO44 = UART0_TXD (ROM default)  */
+#define RS485_RX_PIN       GPIO_NUM_43       /* GPIO43 = UART0_RXD (ROM default)  */
+#define RS485_DE_PIN       (-1)              /* auto-switching RS485, no DE        */
 #define RS485_BAUD         115200
 
 /* ---- Motor MODBUS IDs ---- */

@@ -1,3 +1,3 @@
-idf_component_register(SRCS "motor.c"
+idf_component_register(SRCS "motor.c" "Emm_V5.c" "usart.c"
                         INCLUDE_DIRS "."
-                        REQUIRES modbus_485 driver)
+                        REQUIRES rs485 driver)

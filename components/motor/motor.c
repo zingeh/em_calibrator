@@ -1,220 +1,234 @@
 /*
- * motor.c — Stepper motor driver using ZDT MODBUS RTU
+ * motor.c — thin wrapper: our API → Emm_V5 binary protocol
  *
- * MODBUS register map (ZDT closed-loop driver):
- *   0x0006  WO   Encoder calibration (write 1)
- *   0x000A  WO   Position clear / set zero (write 1)
- *   0x0030  RO   Real-time pulse count (6 bytes)
- *   0x0385  RW   Running speed (RPM, uint16)
- *   0x0386  RW   Target position low 16
- *   0x0387  RW   Target position high 16
- *   0x038B  RO   Position-arrival flag
- *   0x0064  RO   Alarm code
+ * Emm_V5 builds command frames; we send via RS485 and receive responses.
+ * All Emm_V5 send functions end with checksum byte 0x6B.
+ * Response format: [addr][cmd][data...][0x6B]
  */
 
 #include "motor.h"
-#include "modbus_485.h"
+#include "Emm_V5.h"
+#include "rs485.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
-#include <stdlib.h>
 
 static const char *TAG = "motor";
 
-/* ---- Utility: clamp ---- */
-static int32_t clamp_i32(int32_t v, int32_t lo, int32_t hi)
+static inline int32_t clamp_i32(int32_t v, int32_t lo, int32_t hi)
+{ return (v < lo) ? lo : (v > hi) ? hi : v; }
+
+/* ---- recv helper ---- */
+
+static esp_err_t emm_recv(uint8_t addr, size_t *n, uint8_t *rx, size_t max,
+                           int timeout_ms)
 {
-    if (v < lo) return lo;
-    if (v > hi) return hi;
-    return v;
+    esp_err_t ret = rs485_raw_recv(rx, max, n, timeout_ms);
+    if (ret != ESP_OK) return ret;
+
+    /* Validate: [addr]...[0x6B] */
+    if (*n >= 2 && rx[0] == addr && rx[*n-1] == 0x6B)
+        return ESP_OK;
+    return ESP_ERR_INVALID_RESPONSE;
 }
 
-/* ---- Init ---- */
+/* ---- init ---- */
 
 esp_err_t motor_init(motor_t *m, uint8_t id, motor_type_t type,
-                     const char *name, int32_t max_steps, int32_t min_steps,
-                     float steps_per_unit, uint16_t speed)
+                     const char *name, int32_t max_s, int32_t min_s,
+                     float spu, uint16_t speed)
 {
     if (!m) return ESP_ERR_INVALID_ARG;
     memset(m, 0, sizeof(*m));
-    m->id   = id;
-    m->type = type;
-    strncpy(m->name, name, sizeof(m->name) - 1);
-    m->max_steps      = max_steps;
-    m->min_steps      = min_steps;
-    m->steps_per_unit = steps_per_unit;
-    m->speed          = speed;
-    m->online         = false;
-    m->moving         = false;
+    m->id = id; m->type = type;
+    strncpy(m->name, name, sizeof(m->name)-1);
+    m->max_steps = max_s; m->min_steps = min_s;
+    m->steps_per_unit = spu;
+    m->speed = speed;
+    m->accel = 50;
     return ESP_OK;
 }
 
-/* ---- Probe ---- */
+/* ---- probe ---- */
 
 esp_err_t motor_probe(motor_t *m)
 {
-    /* Read alarm register — a successful read means motor is online */
-    uint8_t rx[2];
-    esp_err_t ret = modbus_485_transaction(m->id, MODBUS_FC_READ_INPUT,
-                                             REG_ALARM, 1, rx, 2, 100);
-    m->online = (ret == ESP_OK);
-    if (m->online) {
-        ESP_LOGI(TAG, "%s (id=%d) online — alarm=0x%02X%02X",
-                 m->name, m->id, rx[0], rx[1]);
-    } else {
-        ESP_LOGW(TAG, "%s (id=%d) offline — err 0x%x", m->name, m->id, ret);
+    if (!m) return ESP_ERR_INVALID_ARG;
+
+    rs485_flush_rx();
+
+    /* Emm_V5_Read_Sys_Params (S_FLAG = 19 → cmd 0x3A) → sends [addr 3A 6B] */
+    Emm_V5_Read_Sys_Params(m->id, S_FLAG);
+
+    uint8_t rx[16]; size_t n;
+    esp_err_t ret = emm_recv(m->id, &n, rx, sizeof(rx), 50);
+
+    if (ret == ESP_OK && n >= 4) {
+        /* Response: [addr][0x3A][flag1][flag0][0x6B]  or  [addr][0x3A][flags][0x6B] */
+        m->online = true;
+        ESP_LOGI(TAG, "%s (id=%d) online (%d bytes)", m->name, m->id, (int)n);
+        motor_enable(m);
+        return ESP_OK;
     }
-    return ret;
+
+    if (n > 0) {
+        char d[64]={0}; int o=0;
+        for(int i=0;i<(int)n&&o<55;i++) o+=snprintf(d+o,sizeof(d)-o,"%02X ",rx[i]);
+        ESP_LOGI(TAG, "probe RX: %s", d);
+    }
+    ESP_LOGW(TAG, "%s (id=%d) offline — %d bytes", m->name, m->id, (int)n);
+    return ESP_ERR_TIMEOUT;
 }
 
-/* ---- Motion ---- */
+/* ---- enable ---- */
+
+esp_err_t motor_enable(motor_t *m)
+{
+    if (!m || !m->online) return ESP_ERR_INVALID_STATE;
+    Emm_V5_En_Control(m->id, true, false);  /* state=true, snF=now */
+    m->enabled = true;
+    ESP_LOGI(TAG, "%s enabled", m->name);
+    return ESP_OK;
+}
+
+/* ---- absolute move (position mode) ---- */
 
 esp_err_t motor_move_absolute(motor_t *m, int32_t steps)
 {
     if (!m) return ESP_ERR_INVALID_ARG;
-    if (!m->online) return ESP_ERR_INVALID_STATE;
+    if (!m->online) { ESP_LOGW(TAG, "%s offline — move ignored", m->name); return ESP_ERR_INVALID_STATE; }
 
     steps = clamp_i32(steps, m->min_steps, m->max_steps);
 
-    /* Set speed first */
-    esp_err_t ret = modbus_485_transaction(m->id, MODBUS_FC_WRITE_SINGLE,
-                                            REG_SPEED, m->speed, NULL, 0, -1);
-    if (ret != ESP_OK) { m->online = false; return ret; }
+    if (!m->enabled) {
+        ESP_LOGW(TAG, "%s not enabled — enabling now", m->name);
+        motor_enable(m);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
 
-    /* Write target position as two 16-bit registers */
-    uint16_t lo = (uint16_t)(steps & 0xFFFF);
-    uint16_t hi = (uint16_t)((steps >> 16) & 0xFFFF);
+    ESP_LOGI(TAG, "%s → %ld steps (%u RPM, acc=%d)",
+             m->name, (long)steps, m->speed, m->accel);
 
-    /* Write low word */
-    ret = modbus_485_transaction(m->id, MODBUS_FC_WRITE_SINGLE,
-                                  REG_TARGET_POS_LO, lo, NULL, 0, -1);
-    if (ret != ESP_OK) { m->online = false; return ret; }
-
-    /* Write high word */
-    ret = modbus_485_transaction(m->id, MODBUS_FC_WRITE_SINGLE,
-                                  REG_TARGET_POS_HI, hi, NULL, 0, -1);
-    if (ret != ESP_OK) { m->online = false; return ret; }
+    /* raF=2: absolute move relative to current real-time position */
+    Emm_V5_Pos_Control(m->id, 0, m->speed, m->accel, (uint32_t)steps, 2, false);
 
     m->target_pos = steps;
     m->moving = true;
-
-    ESP_LOGI(TAG, "%s → %ld steps", m->name, (long)steps);
     return ESP_OK;
 }
+
+/* ---- relative move ---- */
 
 esp_err_t motor_move_relative(motor_t *m, int32_t delta)
 {
     if (!m) return ESP_ERR_INVALID_ARG;
-    int32_t target = clamp_i32(m->current_pos + delta, m->min_steps, m->max_steps);
-    return motor_move_absolute(m, target);
+    int32_t t = clamp_i32(m->current_pos + delta, m->min_steps, m->max_steps);
+    return motor_move_absolute(m, t);
 }
+
+/* ---- async (LVGL thread — set pending_delta, poll task executes) ---- */
+
+esp_err_t motor_request_relative(motor_t *m, int32_t delta)
+{ if (!m) return ESP_ERR_INVALID_ARG; m->pending_delta = delta; return ESP_OK; }
+
+esp_err_t motor_request_absolute(motor_t *m, int32_t steps)
+{
+    if (!m) return ESP_ERR_INVALID_ARG;
+    steps = clamp_i32(steps, m->min_steps, m->max_steps);
+    m->pending_delta = steps - m->current_pos;
+    return ESP_OK;
+}
+
+/* ---- stop ---- */
 
 esp_err_t motor_stop(motor_t *m)
 {
     if (!m || !m->online) return ESP_ERR_INVALID_STATE;
-    /* Write zero speed to stop? Actually just move to current position.
-     * ZDT doesn't have a dedicated stop — write current pos as target. */
-    ESP_LOGW(TAG, "%s stop — moving to current position %ld",
-             m->name, (long)m->current_pos);
-    return motor_move_absolute(m, m->current_pos);
+    Emm_V5_Stop_Now(m->id, false);
+    m->moving = false;
+    ESP_LOGI(TAG, "%s stop", m->name);
+    return ESP_OK;
 }
 
-/* ---- Zero / Calibrate ---- */
+/* ---- zero ---- */
 
 esp_err_t motor_set_zero(motor_t *m)
 {
     if (!m || !m->online) return ESP_ERR_INVALID_STATE;
-    esp_err_t ret = modbus_485_transaction(m->id, MODBUS_FC_WRITE_SINGLE,
-                                            REG_CLEAR_POS, 0x0001, NULL, 0, 50);
-    if (ret == ESP_OK) {
-        m->current_pos = 0;
-        m->target_pos = 0;
-        ESP_LOGI(TAG, "%s position zeroed", m->name);
-    } else {
-        m->online = false;
-    }
-    return ret;
+    Emm_V5_Reset_CurPos_To_Zero(m->id);
+    m->current_pos = 0;
+    m->target_pos = 0;
+    ESP_LOGI(TAG, "%s zeroed", m->name);
+    return ESP_OK;
 }
+
+/* ---- calibrate ---- */
 
 esp_err_t motor_calibrate(motor_t *m)
 {
     if (!m || !m->online) return ESP_ERR_INVALID_STATE;
-    esp_err_t ret = modbus_485_transaction(m->id, MODBUS_FC_WRITE_SINGLE,
-                                            REG_CALIBRATE, 0x0001, NULL, 0, 50);
-    if (ret != ESP_OK) m->online = false;
-    else ESP_LOGI(TAG, "%s encoder calibrated", m->name);
-    return ret;
+    Emm_V5_Trig_Encoder_Cal(m->id);
+    ESP_LOGI(TAG, "%s calibrated", m->name);
+    return ESP_OK;
 }
 
-/* ---- Read position ---- */
+/* ---- read position (S_CPOS = 15 → cmd 0x36) ---- */
 
 esp_err_t motor_read_position(motor_t *m)
 {
     if (!m || !m->online) return ESP_ERR_INVALID_STATE;
 
-    uint8_t rx[6];
-    esp_err_t ret = modbus_485_transaction(m->id, MODBUS_FC_READ_INPUT,
-                                            REG_CURRENT_POS, 3, rx, 6, 100);
+    rs485_flush_rx();
+    Emm_V5_Read_Sys_Params(m->id, S_CPOS);  /* [addr][0x36][0x6B] */
+
+    uint8_t rx[16]; size_t n;
+    esp_err_t ret = emm_recv(m->id, &n, rx, sizeof(rx), 30);
     if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "%s pos read fail", m->name);
         m->online = false;
-        ESP_LOGW(TAG, "%s read position failed — marking offline", m->name);
         return ret;
     }
 
-    /* ZDT format: [sign_byte][pos_byte1][pos_byte2][pos_byte3][pos_byte4][??]
-     * sign: 0x00 = positive, 0x01 = negative
-     * position: 32-bit signed, MSB first */
-    int32_t pos = 0;
-    if (rx[0] == 0x01) {
-        /* Negative — two's complement */
-        pos = (int32_t)((rx[1] << 24) | (rx[2] << 16) | (rx[3] << 8) | rx[4]);
-        pos = -pos;
-    } else {
-        pos = (int32_t)((rx[1] << 24) | (rx[2] << 16) | (rx[3] << 8) | rx[4]);
+    /* [addr][0x36][B3][B2][B1][B0][0x6B] */
+    if (n >= 7 && rx[1] == 0x36) {
+        m->current_pos = ((int32_t)rx[2]<<24)|((int32_t)rx[3]<<16)
+                        |((int32_t)rx[4]<<8)|(int32_t)rx[5];
     }
-    m->current_pos = pos;
-
-    /* Check arrival flag */
-    uint8_t arr[2];
-    ret = modbus_485_transaction(m->id, MODBUS_FC_READ_INPUT,
-                                  REG_POS_ARRIVED, 1, arr, 2, 50);
-    m->moving = (ret == ESP_OK) ? (arr[1] == 0) : true;
-
     return ESP_OK;
 }
 
-/* ---- Homing stub ---- */
+/* ---- homing stub ---- */
 
 esp_err_t motor_homing(motor_t *m)
 {
     if (!m || !m->online) return ESP_ERR_INVALID_STATE;
-    /*
-     * TODO: Insert application-specific homing logic here.
-     * e.g. move toward limit switch until triggered, then back off.
-     * For now, just set current position to zero.
-     */
-    ESP_LOGW(TAG, "%s homing — using motor_set_zero() as placeholder. "
-             "Implement limit-switch logic here.", m->name);
+    ESP_LOGW(TAG, "%s homing — placeholder", m->name);
     return motor_set_zero(m);
 }
 
-/* ---- Background position polling task ---- */
+/* ---- background poll task ---- */
 
-static motor_t     **poll_motors  = NULL;
-static int           poll_count   = 0;
-static int           poll_interval = 200;
+static motor_t **poll_motors  = NULL;
+static int       poll_count   = 0;
+static int       poll_interval = 200;
 
 static void motor_poll_task(void *arg)
 {
     (void)arg;
-    ESP_LOGI(TAG, "Poll task started — %d motors, %d ms interval", poll_count, poll_interval);
-
+    ESP_LOGI(TAG, "Poll task — %d motors @ %d ms", poll_count, poll_interval);
     while (1) {
         for (int i = 0; i < poll_count; i++) {
             motor_t *m = poll_motors[i];
-            if (m && m->online)
-                motor_read_position(m);
+            if (m && m->online && m->pending_delta != 0) {
+                int32_t d = m->pending_delta; m->pending_delta = 0;
+                ESP_LOGI(TAG, "poll: %s exec delta=%ld", m->name, (long)d);
+                motor_move_relative(m, d);
+            }
+        }
+        for (int i = 0; i < poll_count; i++) {
+            motor_t *m = poll_motors[i];
+            if (m && m->online) motor_read_position(m);
         }
         vTaskDelay(pdMS_TO_TICKS(poll_interval));
     }
@@ -222,12 +236,10 @@ static void motor_poll_task(void *arg)
 
 esp_err_t motor_start_poll_task(motor_t **motors, int count, int interval_ms)
 {
-    poll_motors   = motors;
-    poll_count    = count;
-    poll_interval = interval_ms;
-
+    poll_motors = motors; poll_count = count; poll_interval = interval_ms;
     if (xTaskCreatePinnedToCore(motor_poll_task, "motor_poll",
-                                 3 * 1024, NULL, 1, NULL, tskNO_AFFINITY) != pdPASS) {
+                                 4*1024, NULL, 1, NULL,
+                                 tskNO_AFFINITY) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create motor poll task");
         return ESP_FAIL;
     }

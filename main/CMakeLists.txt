@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS "main.c"
     INCLUDE_DIRS "."
-    REQUIRES modbus_485 motor ui lvgl_port
+    REQUIRES rs485 motor ui lvgl_port
     WHOLE_ARCHIVE
 )
 
