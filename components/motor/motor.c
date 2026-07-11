@@ -47,6 +47,8 @@ esp_err_t motor_init(motor_t *m, uint8_t id, motor_type_t type,
     m->steps_per_unit = spu;
     m->speed = speed;
     m->accel = 50;
+    m->target_pos = 0;
+    m->current_pos = 0;
     return ESP_OK;
 }
 
@@ -87,6 +89,7 @@ esp_err_t motor_enable(motor_t *m)
 {
     if (!m || !m->online) return ESP_ERR_INVALID_STATE;
     Emm_V5_En_Control(m->id, true, false);  /* state=true, snF=now */
+    vTaskDelay(pdMS_TO_TICKS(50));
     m->enabled = true;
     ESP_LOGI(TAG, "%s enabled", m->name);
     return ESP_OK;
@@ -114,17 +117,44 @@ esp_err_t motor_move_absolute(motor_t *m, int32_t steps)
     Emm_V5_Pos_Control(m->id, 0, m->speed, m->accel, (uint32_t)steps, 2, false);
 
     m->target_pos = steps;
+    m->current_pos = steps;  /* optimistic — corrected by next read */
     m->moving = true;
     return ESP_OK;
 }
 
-/* ---- relative move ---- */
+/* ---- relative move (QPos — FC 0xFC, signed int32 delta) ---- */
 
 esp_err_t motor_move_relative(motor_t *m, int32_t delta)
 {
     if (!m) return ESP_ERR_INVALID_ARG;
-    int32_t t = clamp_i32(m->current_pos + delta, m->min_steps, m->max_steps);
-    return motor_move_absolute(m, t);
+    if (!m->online) { ESP_LOGW(TAG, "%s offline — rel ignored", m->name); return ESP_ERR_INVALID_STATE; }
+
+    if (!m->enabled) {
+        motor_enable(m);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    /* Use target_pos (last known good position), not current_pos (may be stale).
+     * current_pos is only updated by motor_read_position, which can fail. */
+    int32_t clamped = clamp_i32(m->target_pos + delta, m->min_steps, m->max_steps);
+    delta = clamped - m->target_pos;
+
+    if (delta == 0) {
+        ESP_LOGI(TAG, "%s rel skipped — already at limit", m->name);
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "%s rel %+ld steps (%u RPM, acc=%d)",
+             m->name, (long)delta, m->speed, m->accel);
+
+    /* Emm_V5_QPos_Control: addr 0xFC [clk_B3..B0] 0x6B
+     * +clk = CW, -clk = CCW.  16 microsteps × 200 = 3200 per rev. */
+    Emm_V5_QPos_Control(m->id, delta);
+
+    m->target_pos = clamped;
+    m->current_pos = clamped;  /* optimistic — corrected by next read */
+    m->moving = true;
+    return ESP_OK;
 }
 
 /* ---- async (LVGL thread — set pending_delta, poll task executes) ---- */
@@ -136,7 +166,10 @@ esp_err_t motor_request_absolute(motor_t *m, int32_t steps)
 {
     if (!m) return ESP_ERR_INVALID_ARG;
     steps = clamp_i32(steps, m->min_steps, m->max_steps);
-    m->pending_delta = steps - m->current_pos;
+    /* Use target_pos (last commanded) rather than current_pos (may be stale).
+     * When motor is idle, current_pos == target_pos.  When moving, this
+     * gives a correct delta from whatever the last command was. */
+    m->pending_delta = steps - m->target_pos;
     return ESP_OK;
 }
 
@@ -182,18 +215,31 @@ esp_err_t motor_read_position(motor_t *m)
     rs485_flush_rx();
     Emm_V5_Read_Sys_Params(m->id, S_CPOS);  /* [addr][0x36][0x6B] */
 
+    /* Give the motor a moment to respond */
+    vTaskDelay(pdMS_TO_TICKS(5));
+
     uint8_t rx[16]; size_t n;
     esp_err_t ret = emm_recv(m->id, &n, rx, sizeof(rx), 30);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "%s pos read fail", m->name);
-        m->online = false;
+        /* Don't mark offline yet — one bad read could be bus contention */
+        if (n > 0) {
+            char d[64]={0}; int o=0;
+            for(int i=0;i<(int)n&&o<55;i++) o+=snprintf(d+o,sizeof(d)-o,"%02X ",rx[i]);
+            ESP_LOGW(TAG, "%s pos read fail — got %d B: %s", m->name, (int)n, d);
+        } else {
+            ESP_LOGW(TAG, "%s pos read fail — timeout", m->name);
+        }
         return ret;
     }
 
-    /* [addr][0x36][B3][B2][B1][B0][0x6B] */
+    /* [addr][0x36][B3][B2][B1][B0][0x6B] = 7 bytes */
     if (n >= 7 && rx[1] == 0x36) {
         m->current_pos = ((int32_t)rx[2]<<24)|((int32_t)rx[3]<<16)
                         |((int32_t)rx[4]<<8)|(int32_t)rx[5];
+    } else {
+        char d[64]={0}; int o=0;
+        for(int i=0;i<(int)n&&o<55;i++) o+=snprintf(d+o,sizeof(d)-o,"%02X ",rx[i]);
+        ESP_LOGW(TAG, "%s pos parse fail — got %d B: %s", m->name, (int)n, d);
     }
     return ESP_OK;
 }
@@ -218,14 +264,23 @@ static void motor_poll_task(void *arg)
     (void)arg;
     ESP_LOGI(TAG, "Poll task — %d motors @ %d ms", poll_count, poll_interval);
     while (1) {
+        bool did_move = false;
         for (int i = 0; i < poll_count; i++) {
             motor_t *m = poll_motors[i];
             if (m && m->online && m->pending_delta != 0) {
                 int32_t d = m->pending_delta; m->pending_delta = 0;
                 ESP_LOGI(TAG, "poll: %s exec delta=%ld", m->name, (long)d);
                 motor_move_relative(m, d);
+                did_move = true;
             }
         }
+        /* If we just sent a move command, let the motor process it
+         * before sending more frames.  Otherwise read immediately. */
+        if (did_move)
+            vTaskDelay(pdMS_TO_TICKS(100));
+        else
+            vTaskDelay(pdMS_TO_TICKS(10));
+
         for (int i = 0; i < poll_count; i++) {
             motor_t *m = poll_motors[i];
             if (m && m->online) motor_read_position(m);

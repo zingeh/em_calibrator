@@ -1,5 +1,9 @@
 /*
- * ui.c — EM Calibrator main control screen (800×480, fits all rows)
+ * ui.c — EM Calibrator control screen (LVGL 9.2)
+ *
+ * Each measurement now shows two lines: TARGET  and  ACTUAL.
+ * Distance card:  Target / Actual  (cm)
+ * Angle rows:     Target / Actual  (°)
  */
 
 #include "ui.h"
@@ -11,9 +15,15 @@
 static const char *TAG = "ui";
 static motor_t **g_motors = NULL;
 
-static lv_obj_t *lbl_dist_val;
-static lv_obj_t *lbl_base_yaw_val, *lbl_base_pitch_val;
-static lv_obj_t *lbl_trk_yaw_val,  *lbl_trk_pitch_val;
+/* Distance */
+static lv_obj_t *lbl_dist_tgt, *lbl_dist_act;
+
+/* Base: Yaw / Pitch — target + actual */
+static lv_obj_t *lbl_by_tgt, *lbl_by_act, *lbl_bp_tgt, *lbl_bp_act;
+
+/* Tracker: Yaw / Pitch — target + actual */
+static lv_obj_t *lbl_ty_tgt, *lbl_ty_act, *lbl_tp_tgt, *lbl_tp_act;
+
 static lv_obj_t *dot_base, *dot_trk;
 static lv_obj_t *btn_dm100,*btn_dm10,*btn_dm1,*btn_dp1,*btn_dp10,*btn_dp100;
 
@@ -61,10 +71,8 @@ static void dot_set(lv_obj_t *d, bool on) {
 #define CB(idx,suf,dlt) \
 static void _cb_##idx##_##suf(lv_event_t *e) { \
     (void)e; if(g_motors&&g_motors[idx]) motor_request_relative(g_motors[idx],dlt); }
-/* 320 steps/mm:  1cm=3200, 10cm=32000, 100cm=320000 steps */
 CB(0,m100,-320000) CB(0,m10,-32000) CB(0,m1,-3200)
-CB(0,p1,    3200)  CB(0,p10,  32000) CB(0,p100,  320000)
-/* 3200 steps/rev ÷ 360° = 8.889 steps/°.  ±90° = ±800 steps (1/4 rev) */
+CB(0,p1,3200)      CB(0,p10,32000)  CB(0,p100,320000)
 CB(1,m90,-800) CB(1,p90,800)  CB(2,m90,-800) CB(2,p90,800)
 CB(3,m90,-800) CB(3,p90,800)  CB(4,m90,-800) CB(4,p90,800)
 #undef CB
@@ -74,27 +82,44 @@ static void cb_reset(lv_event_t *e) {
     for(int i=0;i<5;i++) if(g_motors[i]) motor_request_absolute(g_motors[i],0);
 }
 
-/* ---- timer (never blocks) ---- */
+/* ---- timer (200 ms) ---- */
 
 static void timer_cb(lv_timer_t *t) {
     (void)t; if(!g_motors) return; char b[32];
 
+    /* --- Distance --- */
     motor_t *md=g_motors[0];
-    if(md&&md->online) snprintf(b,sizeof(b),"%.1f cm",motor_steps_to_unit(md,md->current_pos)/10.0f);
-    else snprintf(b,sizeof(b),"--.- cm");
-    lv_label_set_text(lbl_dist_val,b);
-
-    lv_obj_t *als[4]={lbl_base_yaw_val,lbl_base_pitch_val,lbl_trk_yaw_val,lbl_trk_pitch_val};
-    for(int i=0;i<4;i++){motor_t*m=g_motors[i+1];
-        if(m&&m->online) snprintf(b,sizeof(b),"%+.1f°",motor_steps_to_unit(m,m->current_pos));
-        else snprintf(b,sizeof(b),"---.-°");
-        lv_label_set_text(als[i],b);
+    if (md&&md->online) {
+        snprintf(b,sizeof(b),"%.1f cm",motor_steps_to_unit(md,md->target_pos)/10.0f);
+        lv_label_set_text(lbl_dist_tgt,b);
+        snprintf(b,sizeof(b),"%.1f cm",motor_steps_to_unit(md,md->current_pos)/10.0f);
+        lv_label_set_text(lbl_dist_act,b);
+    } else {
+        lv_label_set_text(lbl_dist_tgt,"--.- cm");
+        lv_label_set_text(lbl_dist_act,"--.- cm");
     }
+
+    /* --- Angles --- */
+    lv_obj_t *tgt[4]={lbl_by_tgt,lbl_bp_tgt,lbl_ty_tgt,lbl_tp_tgt};
+    lv_obj_t *act[4]={lbl_by_act,lbl_bp_act,lbl_ty_act,lbl_tp_act};
+    for(int i=0;i<4;i++){motor_t*m=g_motors[i+1];
+        if(m&&m->online){
+            snprintf(b,sizeof(b),"%+.1f°",motor_steps_to_unit(m,m->target_pos));
+            lv_label_set_text(tgt[i],b);
+            snprintf(b,sizeof(b),"%+.1f°",motor_steps_to_unit(m,m->current_pos));
+            lv_label_set_text(act[i],b);
+        } else {
+            lv_label_set_text(tgt[i],"---.-°");
+            lv_label_set_text(act[i],"---.-°");
+        }
+    }
+
     dot_set(dot_base,g_motors[1]&&g_motors[1]->online);
     dot_set(dot_trk, g_motors[3]&&g_motors[3]->online);
 
+    /* --- Limit guards --- */
     if(md&&md->online){
-        float mm=motor_steps_to_unit(md,md->current_pos);
+        float mm=motor_steps_to_unit(md,md->target_pos);
         bool lo=(mm<=DISTANCE_MIN_MM+1), hi=(mm>=DISTANCE_MAX_MM-1);
         if(lo){lv_obj_add_state(btn_dm100,LV_STATE_DISABLED);
                lv_obj_add_state(btn_dm10,LV_STATE_DISABLED);
@@ -111,33 +136,57 @@ static void timer_cb(lv_timer_t *t) {
     }
 }
 
-/* ---- angle row: LBL | VAL | -90 | +90  (buttons = 90×42) ---- */
+/* ---- angle row: NAME | -90 | +90 ---- */
 
 #define BTN_W_ANG 90
 #define BTN_H_ANG 42
 
-static void ang_row(lv_obj_t *p, const char *nm, lv_obj_t **val,
-                    lv_event_cb_t cm, lv_event_cb_t cp)
+static void ang_row2(lv_obj_t *p, const char *nm,
+                     lv_obj_t **tgt_out, lv_obj_t **act_out,
+                     lv_event_cb_t cm, lv_event_cb_t cp)
 {
-    lv_obj_t *r=lv_obj_create(p); lv_obj_set_size(r,lv_pct(100),BTN_H_ANG);
-    lv_obj_set_flex_flow(r,LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(r,LV_FLEX_ALIGN_SPACE_EVENLY,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
+    lv_obj_t *r=lv_obj_create(p); lv_obj_set_size(r,lv_pct(100),88);
+    lv_obj_set_flex_flow(r,LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(r,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
     stp(r);
+    lv_obj_set_style_pad_gap(r,2,0);
 
-    lv_obj_t *ln=lv_label_create(r); lv_label_set_text(ln,nm); lv_obj_add_style(ln,&ui_style_label_small,0);
+    /* Row 1: name + buttons */
+    lv_obj_t *rt=lv_obj_create(r); lv_obj_set_size(rt,lv_pct(100),BTN_H_ANG);
+    lv_obj_set_flex_flow(rt,LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(rt,LV_FLEX_ALIGN_SPACE_EVENLY,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
+    stp(rt);
 
-    *val=lv_label_create(r); lv_label_set_text(*val,"---.-°"); lv_obj_add_style(*val,&ui_style_label_medium,0);
+    lv_obj_t *ln=lv_label_create(rt); lv_label_set_text(ln,nm);
+    lv_obj_add_style(ln,&ui_style_label_small,0);
 
-    lv_obj_add_event_cb(btn_sec(r,BTN_W_ANG,BTN_H_ANG,"-90°"),cm,LV_EVENT_CLICKED,NULL);
-    lv_obj_add_event_cb(btn_sec(r,BTN_W_ANG,BTN_H_ANG,"+90°"),cp,LV_EVENT_CLICKED,NULL);
+    lv_obj_add_event_cb(btn_sec(rt,BTN_W_ANG,BTN_H_ANG,"-90°"),cm,LV_EVENT_CLICKED,NULL);
+    lv_obj_add_event_cb(btn_sec(rt,BTN_W_ANG,BTN_H_ANG,"+90°"),cp,LV_EVENT_CLICKED,NULL);
+
+    /* Row 2: TGT xxx  ACT xxx */
+    lv_obj_t *rv=lv_obj_create(r); lv_obj_set_size(rv,lv_pct(100),24);
+    lv_obj_set_flex_flow(rv,LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(rv,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
+    stp(rv); lv_obj_set_style_pad_gap(rv,12,0);
+
+    lv_obj_t *lt=lv_label_create(rv); lv_label_set_text(lt,"TGT");
+    lv_obj_add_style(lt,&ui_style_label_caption,0);
+    *tgt_out=lv_label_create(rv); lv_label_set_text(*tgt_out,"---.-°");
+    lv_obj_add_style(*tgt_out,&ui_style_label_small,0);
+
+    lv_obj_t *la=lv_label_create(rv); lv_label_set_text(la,"ACT");
+    lv_obj_add_style(la,&ui_style_label_caption,0);
+    *act_out=lv_label_create(rv); lv_label_set_text(*act_out,"---.-°");
+    lv_obj_add_style(*act_out,&ui_style_label_small,0);
 }
 #undef BTN_W_ANG
 #undef BTN_H_ANG
 
-/* ---- body card (BASE / TRACKER, 388w) ---- */
+/* ---- body card (BASE / TRACKER) ---- */
 
 static lv_obj_t *body(lv_obj_t *pr, const char *t, lv_obj_t **dot,
-                      lv_obj_t **yv, lv_obj_t **pv,
+                      lv_obj_t **y_tgt,lv_obj_t **y_act,
+                      lv_obj_t **p_tgt,lv_obj_t **p_act,
                       lv_event_cb_t ym,lv_event_cb_t yp,
                       lv_event_cb_t pm,lv_event_cb_t pp)
 {
@@ -154,12 +203,12 @@ static lv_obj_t *body(lv_obj_t *pr, const char *t, lv_obj_t **dot,
     lbl_s(lv_label_create(tr),t,&ui_style_section_title);
     *dot=lv_obj_create(tr); lv_obj_set_size(*dot,8,8); dot_set(*dot,false);
 
-    ang_row(c,"YAW",  yv,ym,yp);
-    ang_row(c,"PITCH",pv,pm,pp);
+    ang_row2(c,"YAW",  y_tgt,y_act,ym,yp);
+    ang_row2(c,"PITCH",p_tgt,p_act,pm,pp);
     return c;
 }
 
-/* ---- row of 3 distance buttons (each ≈ 255×72) ---- */
+/* ---- row of 3 distance buttons (each 255×72) ---- */
 
 #define BTN_W_DIST 255
 #define BTN_H_DIST 72
@@ -193,8 +242,7 @@ void ui_init(motor_t *motors[5])
     lv_obj_t *col=lv_obj_create(scr);
     lv_obj_set_size(col,lv_pct(100),lv_pct(100));
     lv_obj_set_flex_flow(col,LV_FLEX_FLOW_COLUMN);
-    stp(col);
-    lv_obj_set_style_pad_gap(col,4,0);
+    stp(col); lv_obj_set_style_pad_gap(col,4,0);
 
     /* — header 24 — */
     lv_obj_t *hd=lv_obj_create(col); lv_obj_set_size(hd,lv_pct(100),24);
@@ -209,33 +257,50 @@ void ui_init(motor_t *motors[5])
     lv_obj_t *hv=lv_label_create(hd); lv_label_set_text(hv,APP_VERSION);
     lv_obj_add_style(hv,&ui_style_label_caption,0); lv_obj_set_style_text_color(hv,UI_COLOR_ON_DARK,0);
 
-    /* — distance card  (8+12+2+72+2+28+2+72+8 = 206) — */
-    lv_obj_t *cd=lv_obj_create(col); lv_obj_set_size(cd,lv_pct(100),206);
+    /* — distance card — */
+    lv_obj_t *cd=lv_obj_create(col); lv_obj_set_size(cd,lv_pct(100),LV_SIZE_CONTENT);
     lv_obj_add_style(cd,&ui_style_card,0);
     lv_obj_set_flex_flow(cd,LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(cd,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(cd,8,0); lv_obj_set_style_pad_gap(cd,2,0);
+    lv_obj_set_style_pad_all(cd,8,0); lv_obj_set_style_pad_gap(cd,6,0);
     lv_obj_set_scrollbar_mode(cd,LV_SCROLLBAR_MODE_OFF);
     lbl_s(lv_label_create(cd),"DISTANCE",&ui_style_section_title);
 
     lv_obj_t *rd=btn3(cd,"-100 cm","-10 cm","-1 cm",_cb_0_m100,_cb_0_m10,_cb_0_m1);
-    lbl_dist_val=lv_label_create(cd); lv_label_set_text(lbl_dist_val,"--.- cm");
-    lv_obj_add_style(lbl_dist_val,&ui_style_label_value,0);
+
+    /* Target / Actual row */
+    lv_obj_t *dv=lv_obj_create(cd); lv_obj_set_size(dv,lv_pct(100),LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(dv,LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(dv,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
+    stp(dv); lv_obj_set_style_pad_gap(dv,12,0);
+
+    lv_obj_t *dt=lv_label_create(dv); lv_label_set_text(dt,"TGT");
+    lv_obj_add_style(dt,&ui_style_label_caption,0);
+    lbl_dist_tgt=lv_label_create(dv); lv_label_set_text(lbl_dist_tgt,"--.- cm");
+    lv_obj_add_style(lbl_dist_tgt,&ui_style_label_value,0);
+
+    lv_obj_t *da=lv_label_create(dv); lv_label_set_text(da,"ACT");
+    lv_obj_add_style(da,&ui_style_label_caption,0);
+    lbl_dist_act=lv_label_create(dv); lv_label_set_text(lbl_dist_act,"--.- cm");
+    lv_obj_add_style(lbl_dist_act,&ui_style_label_medium,0);
+
     lv_obj_t *ri=btn3(cd,"+1 cm","+10 cm","+100 cm",_cb_0_p1,_cb_0_p10,_cb_0_p100);
 
     uint32_t nd=lv_obj_get_child_cnt(rd); if(nd>=3){btn_dm100=lv_obj_get_child(rd,0);btn_dm10=lv_obj_get_child(rd,1);btn_dm1=lv_obj_get_child(rd,2);}
     uint32_t ni=lv_obj_get_child_cnt(ri); if(ni>=3){btn_dp1=lv_obj_get_child(ri,0);btn_dp10=lv_obj_get_child(ri,1);btn_dp100=lv_obj_get_child(ri,2);}
 
-    /* — base+tracker row  (6+18+2+42+2+42+6 = 118) — */
-    lv_obj_t *rb=lv_obj_create(col); lv_obj_set_size(rb,lv_pct(100),122);
+    /* — base+tracker row — */
+    lv_obj_t *rb=lv_obj_create(col); lv_obj_set_size(rb,lv_pct(100),LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(rb,LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(rb,LV_FLEX_ALIGN_SPACE_EVENLY,LV_FLEX_ALIGN_START,LV_FLEX_ALIGN_START);
     stp(rb); lv_obj_set_style_pad_gap(rb,12,0);
 
-    body(rb,"BASE",   &dot_base,   &lbl_base_yaw_val,&lbl_base_pitch_val,
-         _cb_1_m90,_cb_1_p90,_cb_2_m90,_cb_2_p90);
-    body(rb,"TRACKER",&dot_trk,    &lbl_trk_yaw_val, &lbl_trk_pitch_val,
-         _cb_3_m90,_cb_3_p90,_cb_4_m90,_cb_4_p90);
+    body(rb,"BASE",   &dot_base,
+         &lbl_by_tgt,&lbl_by_act, &lbl_bp_tgt,&lbl_bp_act,
+         _cb_1_m90,_cb_1_p90, _cb_2_m90,_cb_2_p90);
+    body(rb,"TRACKER",&dot_trk,
+         &lbl_ty_tgt,&lbl_ty_act, &lbl_tp_tgt,&lbl_tp_act,
+         _cb_3_m90,_cb_3_p90, _cb_4_m90,_cb_4_p90);
 
     /* — reset 52 — */
     lv_obj_t *res=btn_dng(col,lv_pct(100),52,"RESET ALL");
