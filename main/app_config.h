@@ -38,10 +38,12 @@
 #define LEAD_SCREW_PITCH_MM     10.0f
 
 /* ---- Safety limits ---- */
-#define DISTANCE_MAX_MM         1500.0f
+#define DISTANCE_MAX_MM         1200.0f
 #define DISTANCE_MIN_MM         0.0f
-#define ANGLE_MAX_DEG            90.0f
-#define ANGLE_MIN_DEG           -90.0f
+#define YAW_MAX_DEG              180.0f
+#define YAW_MIN_DEG             -180.0f
+#define PITCH_MAX_DEG             0.0f
+#define PITCH_MIN_DEG           -90.0f
 
 /* ---- UI refresh interval (ms) ---- */
 #define UI_REFRESH_MS          200

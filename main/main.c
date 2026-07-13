@@ -68,26 +68,26 @@ void app_main(void)
     motors[0] = &m_buf[0];
 
     motor_init(&m_buf[1], MOTOR_ID_BASE_YAW,   MOTOR_ROTARY,
-               "Base Yaw",   (int32_t)( ANGLE_MAX_DEG * spu_ang),
-               (int32_t)( ANGLE_MIN_DEG * spu_ang),
+               "Base Yaw",   (int32_t)(YAW_MAX_DEG   * spu_ang),
+               (int32_t)(YAW_MIN_DEG   * spu_ang),
                spu_ang, MOTOR_SPEED_ANGLE);
     motors[1] = &m_buf[1];
 
     motor_init(&m_buf[2], MOTOR_ID_BASE_PITCH, MOTOR_ROTARY,
-               "Base Pitch", (int32_t)( ANGLE_MAX_DEG * spu_ang),
-               (int32_t)( ANGLE_MIN_DEG * spu_ang),
+               "Base Pitch", (int32_t)(PITCH_MAX_DEG * spu_ang),
+               (int32_t)(PITCH_MIN_DEG * spu_ang),
                spu_ang, MOTOR_SPEED_ANGLE);
     motors[2] = &m_buf[2];
 
     motor_init(&m_buf[3], MOTOR_ID_TRACK_YAW,  MOTOR_ROTARY,
-               "Track Yaw",  (int32_t)( ANGLE_MAX_DEG * spu_ang),
-               (int32_t)( ANGLE_MIN_DEG * spu_ang),
+               "Track Yaw",  (int32_t)(YAW_MAX_DEG   * spu_ang),
+               (int32_t)(YAW_MIN_DEG   * spu_ang),
                spu_ang, MOTOR_SPEED_ANGLE);
     motors[3] = &m_buf[3];
 
     motor_init(&m_buf[4], MOTOR_ID_TRACK_PITCH,MOTOR_ROTARY,
-               "Track Pitch",(int32_t)( ANGLE_MAX_DEG * spu_ang),
-               (int32_t)( ANGLE_MIN_DEG * spu_ang),
+               "Track Pitch",(int32_t)(PITCH_MAX_DEG * spu_ang),
+               (int32_t)(PITCH_MIN_DEG * spu_ang),
                spu_ang, MOTOR_SPEED_ANGLE);
     motors[4] = &m_buf[4];
 
