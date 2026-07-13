@@ -65,6 +65,7 @@ void app_main(void)
                "Distance",  (int32_t)(DISTANCE_MAX_MM * spu_dist),
                (int32_t)(DISTANCE_MIN_MM * spu_dist),
                spu_dist, MOTOR_SPEED_DISTANCE);
+    m_buf[0].pos_offset = (int32_t)(100.0f * spu_dist);  /* 10 cm physical offset */
     motors[0] = &m_buf[0];
 
     motor_init(&m_buf[1], MOTOR_ID_BASE_YAW,   MOTOR_ROTARY,

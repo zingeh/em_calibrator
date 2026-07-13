@@ -29,6 +29,7 @@ typedef struct motor {
 
     int32_t      current_pos;      /* last read position (steps) */
     int32_t      target_pos;
+    int32_t      pos_offset;       /* fixed offset added to display (steps) */
     int32_t      pending_delta;    /* async queue for poll task  */
     bool         moving;
     bool         online;

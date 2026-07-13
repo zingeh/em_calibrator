@@ -91,9 +91,10 @@ static void timer_cb(lv_timer_t *t) {
     /* --- Distance --- */
     motor_t *md=g_motors[0];
     if (md&&md->online) {
-        snprintf(b,sizeof(b),"%.1f cm",motor_steps_to_unit(md,md->target_pos)/10.0f);
+        int32_t off = md->pos_offset;
+        snprintf(b,sizeof(b),"%.1f cm",motor_steps_to_unit(md,md->target_pos+off)/10.0f);
         lv_label_set_text(lbl_dist_tgt,b);
-        snprintf(b,sizeof(b),"%.1f cm",motor_steps_to_unit(md,md->current_pos)/10.0f);
+        snprintf(b,sizeof(b),"%.1f cm",motor_steps_to_unit(md,md->current_pos+off)/10.0f);
         lv_label_set_text(lbl_dist_act,b);
     } else {
         lv_label_set_text(lbl_dist_tgt,"--.- cm");
@@ -120,7 +121,7 @@ static void timer_cb(lv_timer_t *t) {
 
     /* --- Limit guards --- */
     if(md&&md->online){
-        float mm=motor_steps_to_unit(md,md->target_pos);
+        float mm=motor_steps_to_unit(md,md->target_pos + md->pos_offset);
         bool lo=(mm<=DISTANCE_MIN_MM+1), hi=(mm>=DISTANCE_MAX_MM-1);
         if(lo){lv_obj_add_state(btn_dm100,LV_STATE_DISABLED);
                lv_obj_add_state(btn_dm10,LV_STATE_DISABLED);
