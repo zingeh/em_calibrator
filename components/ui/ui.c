@@ -79,8 +79,8 @@ CB(3,m90,-800) CB(3,p90,800)  CB(4,m90,-800) CB(4,p90,800)
 #undef CB
 
 static void cb_reset(lv_event_t *e) {
-    (void)e; ESP_LOGI(TAG,"RESET ALL");
-    for(int i=0;i<5;i++) if(g_motors[i]) motor_request_absolute(g_motors[i],0);
+    (void)e; ESP_LOGI(TAG,"RESET ALL — homing");
+    for(int i=0;i<5;i++) if(g_motors[i]) motor_request_homing(g_motors[i]);
 }
 
 /* ---- timer (200 ms) ---- */
@@ -244,7 +244,7 @@ void ui_init(motor_t *motors[5])
     lv_obj_t *col=lv_obj_create(scr);
     lv_obj_set_size(col,lv_pct(100),lv_pct(100));
     lv_obj_set_flex_flow(col,LV_FLEX_FLOW_COLUMN);
-    stp(col); lv_obj_set_style_pad_gap(col,4,0);
+    stp(col); lv_obj_set_style_pad_gap(col,2,0);
 
     /* — header 24 — */
     lv_obj_t *hd=lv_obj_create(col); lv_obj_set_size(hd,lv_pct(100),24);
@@ -304,7 +304,7 @@ void ui_init(motor_t *motors[5])
          &lbl_ty_tgt,&lbl_ty_act, &lbl_tp_tgt,&lbl_tp_act,
          _cb_3_m90,_cb_3_p90, _cb_4_m90,_cb_4_p90);
 
-    /* — reset 52 — */
+    /* — RESET ALL — */
     lv_obj_t *res=btn_dng(col,lv_pct(100),52,"RESET ALL");
     lv_obj_add_event_cb(res,cb_reset,LV_EVENT_CLICKED,NULL);
 

@@ -166,10 +166,14 @@ esp_err_t motor_request_absolute(motor_t *m, int32_t steps)
 {
     if (!m) return ESP_ERR_INVALID_ARG;
     steps = clamp_i32(steps, m->min_steps, m->max_steps);
-    /* Use target_pos (last commanded) rather than current_pos (may be stale).
-     * When motor is idle, current_pos == target_pos.  When moving, this
-     * gives a correct delta from whatever the last command was. */
     m->pending_delta = steps - m->target_pos;
+    return ESP_OK;
+}
+
+esp_err_t motor_request_homing(motor_t *m)
+{
+    if (!m) return ESP_ERR_INVALID_ARG;
+    m->pending_homing = true;
     return ESP_OK;
 }
 
@@ -262,8 +266,15 @@ esp_err_t motor_read_position(motor_t *m)
 esp_err_t motor_homing(motor_t *m)
 {
     if (!m || !m->online) return ESP_ERR_INVALID_STATE;
-    ESP_LOGW(TAG, "%s homing — placeholder", m->name);
-    return motor_set_zero(m);
+    ESP_LOGI(TAG, "%s homing — MMCL multi-motor return (mode=1)", m->name);
+    /* o_mode=1: near-origin sensor return. snF=false: execute now. */
+    MMCL_count = 0;
+    Emm_V5_MMCL_Origin_Trigger_Return(m->id, 1, false);
+    Emm_V5_Multi_Motor_Cmd(m->id);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    m->current_pos = 0;
+    m->target_pos  = 0;
+    return ESP_OK;
 }
 
 /* ---- background poll task ---- */
@@ -278,6 +289,16 @@ static void motor_poll_task(void *arg)
     ESP_LOGI(TAG, "Poll task — %d motors @ %d ms", poll_count, poll_interval);
     while (1) {
         bool did_move = false;
+        for (int i = 0; i < poll_count; i++) {
+            motor_t *m = poll_motors[i];
+            if (m && m->online && m->pending_homing) {
+                m->pending_homing = false;
+                ESP_LOGI(TAG, "poll: %s homing", m->name);
+                motor_enable(m);
+                motor_homing(m);
+                did_move = true;
+            }
+        }
         for (int i = 0; i < poll_count; i++) {
             motor_t *m = poll_motors[i];
             if (m && m->online && m->pending_delta != 0) {

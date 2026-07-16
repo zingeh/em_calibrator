@@ -30,6 +30,7 @@ typedef struct motor {
     int32_t      current_pos;      /* last read position (steps) */
     int32_t      target_pos;
     int32_t      pos_offset;       /* fixed offset added to display (steps) */
+    bool         pending_homing;   /* async: trigger homing       */
     int32_t      pending_delta;    /* async queue for poll task  */
     bool         moving;
     bool         online;
@@ -59,6 +60,7 @@ esp_err_t motor_homing(motor_t *m);
 
 esp_err_t motor_request_relative(motor_t *m, int32_t delta);
 esp_err_t motor_request_absolute(motor_t *m, int32_t steps);
+esp_err_t motor_request_homing(motor_t *m);
 
 /* ---- background poll task (executes pending_delta + reads positions) ---- */
 
