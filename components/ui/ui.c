@@ -9,6 +9,7 @@
 #include "ui.h"
 #include "ui_styles.h"
 #include "app_config.h"
+#include "commander.h"
 #include "esp_log.h"
 #include <stdio.h>
 
@@ -24,7 +25,7 @@ static lv_obj_t *lbl_by_tgt, *lbl_by_act, *lbl_bp_tgt, *lbl_bp_act;
 /* Tracker: Yaw / Pitch — target + actual */
 static lv_obj_t *lbl_ty_tgt, *lbl_ty_act, *lbl_tp_tgt, *lbl_tp_act;
 
-static lv_obj_t *dot_base, *dot_trk;
+static lv_obj_t *dot_base, *dot_trk, *lbl_wifi;
 static lv_obj_t *btn_dm100,*btn_dm10,*btn_dm1,*btn_dp1,*btn_dp10,*btn_dp100;
 
 /* ---- helpers ---- */
@@ -79,8 +80,14 @@ CB(3,m90,-800) CB(3,p90,800)  CB(4,m90,-800) CB(4,p90,800)
 #undef CB
 
 static void cb_reset(lv_event_t *e) {
-    (void)e; ESP_LOGI(TAG,"RESET ALL — homing");
-    for(int i=0;i<5;i++) if(g_motors[i]) motor_request_homing(g_motors[i]);
+    (void)e; ESP_LOGI(TAG,"RESET ALL");
+    for(int i=0;i<5;i++) {
+        if(!g_motors[i]) continue;
+        int32_t d = -g_motors[i]->target_pos;
+        ESP_LOGI(TAG, "  reset[%d] target_pos=%ld delta=%ld online=%d",
+                 i, (long)g_motors[i]->target_pos, (long)d, g_motors[i]->online);
+        motor_request_relative(g_motors[i], d);
+    }
 }
 
 /* ---- timer (200 ms) ---- */
@@ -118,6 +125,8 @@ static void timer_cb(lv_timer_t *t) {
 
     dot_set(dot_base,g_motors[1]&&g_motors[1]->online);
     dot_set(dot_trk, g_motors[3]&&g_motors[3]->online);
+
+    lv_label_set_text(lbl_wifi, commander_get_wifi_status());
 
     /* --- Limit guards --- */
     if(md&&md->online){
@@ -246,8 +255,8 @@ void ui_init(motor_t *motors[5])
     lv_obj_set_flex_flow(col,LV_FLEX_FLOW_COLUMN);
     stp(col); lv_obj_set_style_pad_gap(col,2,0);
 
-    /* — header 24 — */
-    lv_obj_t *hd=lv_obj_create(col); lv_obj_set_size(hd,lv_pct(100),24);
+    /* — header 22 + wifi 16 — */
+    lv_obj_t *hd=lv_obj_create(col); lv_obj_set_size(hd,lv_pct(100),22);
     lv_obj_set_flex_flow(hd,LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(hd,LV_FLEX_ALIGN_SPACE_BETWEEN,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_hor(hd,10,0);
@@ -258,6 +267,18 @@ void ui_init(motor_t *motors[5])
     lv_obj_add_style(ha,&ui_style_label_small,0); lv_obj_set_style_text_color(ha,UI_COLOR_ON_DARK,0);
     lv_obj_t *hv=lv_label_create(hd); lv_label_set_text(hv,APP_VERSION);
     lv_obj_add_style(hv,&ui_style_label_caption,0); lv_obj_set_style_text_color(hv,UI_COLOR_ON_DARK,0);
+
+    /* WiFi status bar */
+    lv_obj_t *wfb=lv_obj_create(col); lv_obj_set_size(wfb,lv_pct(100),16);
+    lv_obj_set_style_pad_hor(wfb,10,0);
+    lv_obj_set_style_border_width(wfb,0,0); lv_obj_set_style_radius(wfb,0,0);
+    lv_obj_set_style_bg_color(wfb,UI_COLOR_HAIRLINE,0);
+    lv_obj_set_style_bg_opa(wfb,LV_OPA_30,0);
+    lv_obj_set_flex_flow(wfb,LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(wfb,LV_FLEX_ALIGN_START,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
+    lbl_wifi=lv_label_create(wfb);
+    lv_obj_add_style(lbl_wifi,&ui_style_label_caption,0);
+    lv_label_set_text(lbl_wifi,"WiFi: off");
 
     /* — distance card — */
     lv_obj_t *cd=lv_obj_create(col); lv_obj_set_size(cd,lv_pct(100),LV_SIZE_CONTENT);

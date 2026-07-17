@@ -113,8 +113,8 @@ esp_err_t motor_move_absolute(motor_t *m, int32_t steps)
     ESP_LOGI(TAG, "%s → %ld steps (%u RPM, acc=%d)",
              m->name, (long)steps, m->speed, m->accel);
 
-    /* raF=2: absolute move relative to current real-time position */
-    Emm_V5_Pos_Control(m->id, 0, m->speed, m->accel, (uint32_t)steps, 2, false);
+    /* raF=0: absolute move relative to last target position */
+    Emm_V5_Pos_Control(m->id, 0, m->speed, m->accel, (uint32_t)steps, 0, false);
 
     m->target_pos = steps;
     m->current_pos = steps;  /* optimistic — corrected by next read */
@@ -147,8 +147,6 @@ esp_err_t motor_move_relative(motor_t *m, int32_t delta)
     ESP_LOGI(TAG, "%s rel %+ld steps (%u RPM, acc=%d)",
              m->name, (long)delta, m->speed, m->accel);
 
-    /* Emm_V5_QPos_Control: addr 0xFC [clk_B3..B0] 0x6B
-     * +clk = CW, -clk = CCW.  16 microsteps × 200 = 3200 per rev. */
     Emm_V5_QPos_Control(m->id, delta);
 
     m->target_pos = clamped;
@@ -165,15 +163,7 @@ esp_err_t motor_request_relative(motor_t *m, int32_t delta)
 esp_err_t motor_request_absolute(motor_t *m, int32_t steps)
 {
     if (!m) return ESP_ERR_INVALID_ARG;
-    steps = clamp_i32(steps, m->min_steps, m->max_steps);
     m->pending_delta = steps - m->target_pos;
-    return ESP_OK;
-}
-
-esp_err_t motor_request_homing(motor_t *m)
-{
-    if (!m) return ESP_ERR_INVALID_ARG;
-    m->pending_homing = true;
     return ESP_OK;
 }
 
@@ -261,22 +251,6 @@ esp_err_t motor_read_position(motor_t *m)
     return ESP_OK;
 }
 
-/* ---- homing stub ---- */
-
-esp_err_t motor_homing(motor_t *m)
-{
-    if (!m || !m->online) return ESP_ERR_INVALID_STATE;
-    ESP_LOGI(TAG, "%s homing — MMCL multi-motor return (mode=1)", m->name);
-    /* o_mode=1: near-origin sensor return. snF=false: execute now. */
-    MMCL_count = 0;
-    Emm_V5_MMCL_Origin_Trigger_Return(m->id, 1, false);
-    Emm_V5_Multi_Motor_Cmd(m->id);
-    vTaskDelay(pdMS_TO_TICKS(200));
-    m->current_pos = 0;
-    m->target_pos  = 0;
-    return ESP_OK;
-}
-
 /* ---- background poll task ---- */
 
 static motor_t **poll_motors  = NULL;
@@ -291,21 +265,12 @@ static void motor_poll_task(void *arg)
         bool did_move = false;
         for (int i = 0; i < poll_count; i++) {
             motor_t *m = poll_motors[i];
-            if (m && m->online && m->pending_homing) {
-                m->pending_homing = false;
-                ESP_LOGI(TAG, "poll: %s homing", m->name);
-                motor_enable(m);
-                motor_homing(m);
-                did_move = true;
-            }
-        }
-        for (int i = 0; i < poll_count; i++) {
-            motor_t *m = poll_motors[i];
             if (m && m->online && m->pending_delta != 0) {
                 int32_t d = m->pending_delta; m->pending_delta = 0;
-                ESP_LOGI(TAG, "poll: %s exec delta=%ld", m->name, (long)d);
+                ESP_LOGI(TAG, "poll: %s delta=%ld", m->name, (long)d);
                 motor_move_relative(m, d);
                 did_move = true;
+                vTaskDelay(pdMS_TO_TICKS(20)); /* bus settle between motors */
             }
         }
         /* If we just sent a move command, let the motor process it

@@ -14,6 +14,7 @@
 #include "motor.h"
 #include "ui.h"
 #include "lvgl_port.h"
+#include "commander.h"
 #include "esp_log.h"
 
 static const char *TAG = "main";
@@ -112,6 +113,10 @@ void app_main(void)
         motor_probe(motors[i]);
 
     motor_start_poll_task(motors, 5, 100);  /* poll every 100ms for snappy button response */
+
+    /* Start G-code commander (USB CDC + WiFi TCP:8888) */
+    commander_cfg_t cmd_cfg = { .motors = motors, .motor_count = 5 };
+    commander_init(&cmd_cfg);
 
     ESP_LOGI(TAG, "Init complete — EM Calibrator ready");
 }
