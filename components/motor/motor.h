@@ -25,6 +25,8 @@ typedef struct motor {
     int32_t      min_steps;
     float        steps_per_unit;   /* steps per mm or degree    */
     uint16_t     speed;            /* RPM                       */
+    uint16_t     speed_default;    /* RPM — restore after override */
+    bool         speed_override;   /* true = use override once   */
     uint8_t      accel;            /* 0-255, 0 = instant         */
 
     int32_t      current_pos;      /* last read position (steps) */
@@ -57,7 +59,7 @@ esp_err_t motor_read_position(motor_t *m);
 /* ---- async requests (LVGL-safe — sets pending flags, returns immediately) ---- */
 
 esp_err_t motor_request_relative(motor_t *m, int32_t delta);
-esp_err_t motor_request_absolute(motor_t *m, int32_t steps);
+esp_err_t motor_request_absolute(motor_t *m, int32_t steps, uint16_t rpm);
 /* ---- background poll task (executes pending_delta + reads positions) ---- */
 
 esp_err_t motor_start_poll_task(motor_t **motors, int count, int interval_ms);

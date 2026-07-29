@@ -45,9 +45,11 @@ esp_err_t motor_init(motor_t *m, uint8_t id, motor_type_t type,
     strncpy(m->name, name, sizeof(m->name)-1);
     m->max_steps = max_s; m->min_steps = min_s;
     m->steps_per_unit = spu;
-    m->speed = speed;
-    m->accel = 50;
-    m->target_pos = 0;
+    m->speed          = speed;
+    m->speed_default  = speed;
+    m->speed_override = false;
+    m->accel          = 50;
+    m->target_pos     = 0;
     m->current_pos = 0;
     return ESP_OK;
 }
@@ -160,10 +162,11 @@ esp_err_t motor_move_relative(motor_t *m, int32_t delta)
 esp_err_t motor_request_relative(motor_t *m, int32_t delta)
 { if (!m) return ESP_ERR_INVALID_ARG; m->pending_delta = delta; return ESP_OK; }
 
-esp_err_t motor_request_absolute(motor_t *m, int32_t steps)
+esp_err_t motor_request_absolute(motor_t *m, int32_t steps, uint16_t rpm)
 {
     if (!m) return ESP_ERR_INVALID_ARG;
     m->pending_delta = steps - m->target_pos;
+    if (rpm > 0) { m->speed = rpm; m->speed_override = true; }
     return ESP_OK;
 }
 
@@ -269,8 +272,10 @@ static void motor_poll_task(void *arg)
                 int32_t d = m->pending_delta; m->pending_delta = 0;
                 ESP_LOGI(TAG, "poll: %s delta=%ld", m->name, (long)d);
                 motor_move_relative(m, d);
+                /* restore default speed after one-time override */
+                if (m->speed_override) { m->speed = m->speed_default; m->speed_override = false; }
                 did_move = true;
-                vTaskDelay(pdMS_TO_TICKS(20)); /* bus settle between motors */
+                vTaskDelay(pdMS_TO_TICKS(20));
             }
         }
         /* If we just sent a move command, let the motor process it

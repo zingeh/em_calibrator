@@ -1,15 +1,16 @@
 /*
  * gcode.c — G-code dispatcher
  *
- * Commands:
- *   G0 D<mm> [R]  — distance    (R = relative, otherwise absolute)
- *   G1 B<deg>     — base yaw    (absolute)
- *   G1 P<deg>     — base pitch  (absolute)
- *   G2 T<deg>     — tracker yaw (absolute)
- *   G2 Q<deg>     — tracker pitch (absolute)
- *   G28           — homing all
- *   M115          — firmware info
- *   M114          — report positions
+ * Motion (with optional speed):
+ *   G0 D<mm> [R] [F<rpm>]   — distance, mm or cm*10
+ *   G1 B<deg> [F<rpm>]      — base yaw
+ *   G1 P<deg> [F<rpm>]      — base pitch
+ *   G2 T<deg> [F<rpm>]      — tracker yaw
+ *   G2 Q<deg> [F<rpm>]      — tracker pitch
+ *   G28                     — home all
+ *   M115                    — firmware info
+ *   M114                    — report all positions
+ *   M1 <id>                 — get single motor position (1-5)
  */
 
 #include "gcode.h"
@@ -19,9 +20,16 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-/* ---- G-code dispatch ---- */
+static uint16_t parse_rpm(const char *p)
+{
+    while (*p) {
+        if (*p == 'F') return (uint16_t)atoi(p + 1);
+        p++;
+    }
+    return 0;  /* 0 = use default speed */
+}
 
-static void cmd_g0(motor_t **m, int n, float d, bool relative)
+static void cmd_g0(motor_t **m, int n, float d, bool relative, uint16_t rpm)
 {
     if (n < 1 || !m[0] || !m[0]->online) {
         commander_reply("error: distance motor offline\r\n");
@@ -31,15 +39,16 @@ static void cmd_g0(motor_t **m, int n, float d, bool relative)
     if (relative) {
         steps = motor_mm_to_steps(m[0], d);
         motor_request_relative(m[0], steps);
-        commander_reply("ok rel D %.1f mm\r\n", d);
+        if (rpm > 0) { m[0]->speed = rpm; m[0]->speed_override = true; }
+        commander_reply("ok rel D %.1f mm F%d\r\n", d, rpm);
     } else {
-        steps = motor_mm_to_steps(m[0], d);
-        motor_request_absolute(m[0], steps);
-        commander_reply("ok abs D %.1f mm\r\n", d);
+        steps = motor_mm_to_steps(m[0], d) - m[0]->pos_offset;
+        motor_request_absolute(m[0], steps, rpm);
+        commander_reply("ok abs D %.1f mm F%d\r\n", d, rpm);
     }
 }
 
-static void cmd_g1(motor_t **m, int n, char axis, float deg)
+static void cmd_g1(motor_t **m, int n, char axis, float deg, uint16_t rpm)
 {
     int idx = -1;
     const char *name = "?";
@@ -50,11 +59,11 @@ static void cmd_g1(motor_t **m, int n, char axis, float deg)
         return;
     }
     int32_t steps = motor_deg_to_steps(m[idx], deg);
-    motor_request_absolute(m[idx], steps);
-    commander_reply("ok %c %.1f deg\r\n", axis, deg);
+    motor_request_absolute(m[idx], steps, rpm);
+    commander_reply("ok %c %.1f deg F%d\r\n", axis, deg, rpm);
 }
 
-static void cmd_g2(motor_t **m, int n, char axis, float deg)
+static void cmd_g2(motor_t **m, int n, char axis, float deg, uint16_t rpm)
 {
     int idx = -1;
     const char *name = "?";
@@ -65,15 +74,18 @@ static void cmd_g2(motor_t **m, int n, char axis, float deg)
         return;
     }
     int32_t steps = motor_deg_to_steps(m[idx], deg);
-    motor_request_absolute(m[idx], steps);
-    commander_reply("ok %c %.1f deg\r\n", axis, deg);
+    motor_request_absolute(m[idx], steps, rpm);
+    commander_reply("ok %c %.1f deg F%d\r\n", axis, deg, rpm);
 }
 
 static void cmd_g28(motor_t **m, int n)
 {
     int cnt = 0;
     for (int i = 0; i < n; i++)
-        if (m[i] && m[i]->online) { motor_request_relative(m[i], -m[i]->target_pos); cnt++; }
+        if (m[i] && m[i]->online) {
+            motor_request_relative(m[i], -m[i]->target_pos);
+            cnt++;
+        }
     commander_reply("ok homing %d motors\r\n", cnt);
 }
 
@@ -99,11 +111,28 @@ static void cmd_m114(motor_t **m, int n)
     commander_reply("ok%s\r\n", buf);
 }
 
-/* ---- Parser ---- */
+static void cmd_m1(motor_t **m, int n, int id)
+{
+    if (id < 1 || id > n || !m[id-1]) {
+        commander_reply("error: invalid motor id %d\r\n", id);
+        return;
+    }
+    motor_t *mo = m[id - 1];
+    float val = motor_steps_to_unit(mo, mo->current_pos);
+    if (mo->type == MOTOR_LINEAR)
+        commander_reply("ok M%d pos=%.1f cm tgt=%.1f cm online=%d moving=%d\r\n",
+                        id, val / 10.0f,
+                        motor_steps_to_unit(mo, mo->target_pos) / 10.0f,
+                        mo->online, mo->moving);
+    else
+        commander_reply("ok M%d pos=%.1f deg tgt=%.1f deg online=%d moving=%d\r\n",
+                        id, val,
+                        motor_steps_to_unit(mo, mo->target_pos),
+                        mo->online, mo->moving);
+}
 
 void gcode_parse(const char *line, motor_t **motors, int count)
 {
-    /* Skip leading whitespace */
     while (*line == ' ' || *line == '\t') line++;
     if (!*line) return;
 
@@ -112,6 +141,8 @@ void gcode_parse(const char *line, motor_t **motors, int count)
         const char *p = line;
         while (*p && *p != ' ') p++;
         while (*p == ' ') p++;
+
+        uint16_t rpm = parse_rpm(p);
 
         switch (code) {
         case 0: {
@@ -122,7 +153,7 @@ void gcode_parse(const char *line, motor_t **motors, int count)
                 else p++;
                 while (*p == ' ') p++;
             }
-            cmd_g0(motors, count, d, rel);
+            cmd_g0(motors, count, d, rel, rpm);
             break;
         }
         case 1: {
@@ -132,7 +163,7 @@ void gcode_parse(const char *line, motor_t **motors, int count)
                 else p++;
                 while (*p == ' ') p++;
             }
-            if (axis) cmd_g1(motors, count, axis, deg);
+            if (axis) cmd_g1(motors, count, axis, deg, rpm);
             break;
         }
         case 2: {
@@ -142,7 +173,7 @@ void gcode_parse(const char *line, motor_t **motors, int count)
                 else p++;
                 while (*p == ' ') p++;
             }
-            if (axis) cmd_g2(motors, count, axis, deg);
+            if (axis) cmd_g2(motors, count, axis, deg, rpm);
             break;
         }
         case 28:
@@ -154,10 +185,15 @@ void gcode_parse(const char *line, motor_t **motors, int count)
         }
     } else if (*line == 'M') {
         int code = atoi(line + 1);
+        const char *p = line;
+        while (*p && *p != ' ') p++;
+        while (*p == ' ') p++;
+
         switch (code) {
         case 115: cmd_m115(); break;
         case 114: cmd_m114(motors, count); break;
-        default: commander_reply("error: unknown M-code M%d\r\n", code); break;
+        case 1:   cmd_m1(motors, count, atoi(p)); break;
+        default:  commander_reply("error: unknown M-code M%d\r\n", code); break;
         }
     } else {
         commander_reply("error: unknown command\r\n");

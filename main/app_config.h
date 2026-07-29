@@ -43,7 +43,7 @@
 #define YAW_MAX_DEG              180.0f
 #define YAW_MIN_DEG             -180.0f
 #define PITCH_MAX_DEG             0.0f
-#define PITCH_MIN_DEG           -90.0f
+#define PITCH_MIN_DEG           -110.0f
 
 /* ---- UI refresh interval (ms) ---- */
 #define UI_REFRESH_MS          200

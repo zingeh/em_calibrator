@@ -139,8 +139,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         snprintf(wifi_status, sizeof(wifi_status),
                  "WiFi: " IPSTR, IP2STR(&ev->ip_info.ip));
         ESP_LOGI(TAG, "WiFi got IP: %s", wifi_status);
-    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED)
-        ESP_LOGI(TAG, "WiFi disconnected — reconnect...");
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        ESP_LOGI(TAG, "WiFi disconnected — reconnecting...");
+        wifi_set_status("WiFi: reconnecting...");
+        esp_wifi_connect();
+    }
 }
 
 static void wifi_setup(void)
@@ -149,6 +152,10 @@ static void wifi_setup(void)
     esp_netif_init();
     esp_event_loop_create_default();
     esp_netif_create_default_wifi_sta();
+
+    /* Give PSRAM/cache and LCD DMA time to settle before WiFi start.
+     * WiFi timing is sensitive — early start can hang the PHY. */
+    vTaskDelay(pdMS_TO_TICKS(500));
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
