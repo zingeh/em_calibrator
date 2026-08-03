@@ -106,7 +106,8 @@ static void cmd_m114(motor_t **m, int n)
     int off = 0;
     for (int i = 0; i < n && i < 5; i++) {
         if (!m[i]) continue;
-        float val = motor_steps_to_unit(m[i], m[i]->current_pos);
+        int32_t adj = m[i]->current_pos + m[i]->pos_offset;
+        float val = motor_steps_to_unit(m[i], adj);
         if (m[i]->type == MOTOR_LINEAR)
             off += snprintf(buf + off, sizeof(buf) - off,
                             " D%.1f", val / 10.0f);
@@ -124,16 +125,19 @@ static void cmd_m1(motor_t **m, int n, int id)
         return;
     }
     motor_t *mo = m[id - 1];
-    float val = motor_steps_to_unit(mo, mo->current_pos);
+    int32_t cur_adj = mo->current_pos + mo->pos_offset;
+    int32_t tgt_adj = mo->target_pos + mo->pos_offset;
     if (mo->type == MOTOR_LINEAR)
         commander_reply("ok M%d pos=%.1f cm tgt=%.1f cm online=%d moving=%d\r\n",
-                        id, val / 10.0f,
-                        motor_steps_to_unit(mo, mo->target_pos) / 10.0f,
+                        id,
+                        motor_steps_to_unit(mo, cur_adj) / 10.0f,
+                        motor_steps_to_unit(mo, tgt_adj) / 10.0f,
                         mo->online, mo->moving);
     else
         commander_reply("ok M%d pos=%.1f deg tgt=%.1f deg online=%d moving=%d\r\n",
-                        id, val,
-                        motor_steps_to_unit(mo, mo->target_pos),
+                        id,
+                        motor_steps_to_unit(mo, cur_adj),
+                        motor_steps_to_unit(mo, tgt_adj),
                         mo->online, mo->moving);
 }
 

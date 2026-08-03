@@ -116,8 +116,14 @@ esp_err_t motor_move_absolute(motor_t *m, int32_t steps)
     ESP_LOGI(TAG, "%s → %ld steps (%u RPM, acc=%d)",
              m->name, (long)steps, m->speed, m->accel);
 
-    /* raF=0: absolute move relative to last target position */
-    Emm_V5_Pos_Control(m->id, 0, m->speed, m->accel, (uint32_t)steps, 0, false);
+    /* Pos_Control: dir (0=CW, 1=CCW) + unsigned step count.
+     * raF=0: the clk parameter is the absolute target position
+     * (relative to the motor's origin, not relative to last target). */
+    {
+        uint8_t  dir    = (steps >= 0) ? 0 : 1;
+        uint32_t usteps = (uint32_t)(steps >= 0 ? steps : -steps);
+        Emm_V5_Pos_Control(m->id, dir, m->speed, m->accel, usteps, 0, false);
+    }
 
     m->target_pos = steps;
     m->current_pos = steps;  /* optimistic — corrected by next read */
@@ -166,7 +172,7 @@ esp_err_t motor_request_relative(motor_t *m, int32_t delta)
 esp_err_t motor_request_absolute(motor_t *m, int32_t steps, uint16_t rpm)
 {
     if (!m) return ESP_ERR_INVALID_ARG;
-    m->pending_delta = steps - m->target_pos;
+    m->pending_abs = steps;
     if (rpm > 0) { m->speed = rpm; m->speed_override = true; }
     return ESP_OK;
 }
@@ -269,11 +275,21 @@ static void motor_poll_task(void *arg)
         bool did_move = false;
         for (int i = 0; i < poll_count; i++) {
             motor_t *m = poll_motors[i];
+            if (m && m->online && m->pending_abs != 0) {
+                int32_t target = m->pending_abs; m->pending_abs = 0;
+                ESP_LOGI(TAG, "poll: %s abs→%ld", m->name, (long)target);
+                motor_move_absolute(m, target);
+                if (m->speed_override) { m->speed = m->speed_default; m->speed_override = false; }
+                did_move = true;
+                vTaskDelay(pdMS_TO_TICKS(20));
+            }
+        }
+        for (int i = 0; i < poll_count; i++) {
+            motor_t *m = poll_motors[i];
             if (m && m->online && m->pending_delta != 0) {
                 int32_t d = m->pending_delta; m->pending_delta = 0;
                 ESP_LOGI(TAG, "poll: %s delta=%ld", m->name, (long)d);
                 motor_move_relative(m, d);
-                /* restore default speed after one-time override */
                 if (m->speed_override) { m->speed = m->speed_default; m->speed_override = false; }
                 did_move = true;
                 vTaskDelay(pdMS_TO_TICKS(20));

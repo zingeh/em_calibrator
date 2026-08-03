@@ -34,6 +34,7 @@ typedef struct motor {
     int32_t      target_pos;
     int32_t      pos_offset;       /* fixed offset added to display (steps) */
     int32_t      pending_delta;    /* async: relative delta      */
+    int32_t      pending_abs;      /* async: absolute target, 0=none */
     bool         moving;
     bool         online;
     bool         enabled;
