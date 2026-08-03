@@ -10,7 +10,7 @@
 ## Motion Commands
 
 All motion commands accept an optional **speed override** `F<rpm>`.
-If omitted, the default speed from `app_config.h` is used.
+If omitted, the default speed from `app_config.h` is used (200 RPM for distance, 120 RPM for angle).
 
 | Command | Description | Example |
 |---------|-------------|---------|

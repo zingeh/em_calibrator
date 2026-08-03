@@ -37,7 +37,7 @@ static esp_err_t emm_recv(uint8_t addr, size_t *n, uint8_t *rx, size_t max,
 
 esp_err_t motor_init(motor_t *m, uint8_t id, motor_type_t type,
                      const char *name, int32_t max_s, int32_t min_s,
-                     float spu, uint16_t speed)
+                     float spu, uint16_t speed, uint16_t speed_max)
 {
     if (!m) return ESP_ERR_INVALID_ARG;
     memset(m, 0, sizeof(*m));
@@ -47,6 +47,7 @@ esp_err_t motor_init(motor_t *m, uint8_t id, motor_type_t type,
     m->steps_per_unit = spu;
     m->speed          = speed;
     m->speed_default  = speed;
+    m->speed_max      = speed_max;
     m->speed_override = false;
     m->accel          = 50;
     m->target_pos     = 0;

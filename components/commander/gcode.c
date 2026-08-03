@@ -1,13 +1,15 @@
 /*
  * gcode.c — G-code dispatcher
  *
- * Motion (with optional speed):
- *   G0 D<mm> [R] [F<rpm>]   — distance, mm or cm*10
+ * Motion (optional F<rpm> speed override; no F = default speed):
+ *   G0 D<mm> [R] [F<rpm>]   — distance, mm
  *   G1 B<deg> [F<rpm>]      — base yaw
  *   G1 P<deg> [F<rpm>]      — base pitch
  *   G2 T<deg> [F<rpm>]      — tracker yaw
  *   G2 Q<deg> [F<rpm>]      — tracker pitch
  *   G28                     — home all
+ *
+ * Query:
  *   M115                    — firmware info
  *   M114                    — report all positions
  *   M1 <id>                 — get single motor position (1-5)
@@ -20,13 +22,17 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+/*
+ * Parse F<rpm> from parameter string.  If no F is present, return 0,
+ * which signals "use the motor's current default speed".
+ */
 static uint16_t parse_rpm(const char *p)
 {
     while (*p) {
         if (*p == 'F') return (uint16_t)atoi(p + 1);
         p++;
     }
-    return 0;  /* 0 = use default speed */
+    return 0;
 }
 
 static void cmd_g0(motor_t **m, int n, float d, bool relative, uint16_t rpm)
@@ -38,8 +44,8 @@ static void cmd_g0(motor_t **m, int n, float d, bool relative, uint16_t rpm)
     int32_t steps;
     if (relative) {
         steps = motor_mm_to_steps(m[0], d);
-        motor_request_relative(m[0], steps);
         if (rpm > 0) { m[0]->speed = rpm; m[0]->speed_override = true; }
+        motor_request_relative(m[0], steps);
         commander_reply("ok rel D %.1f mm F%d\r\n", d, rpm);
     } else {
         steps = motor_mm_to_steps(m[0], d) - m[0]->pos_offset;

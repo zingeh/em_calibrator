@@ -26,6 +26,7 @@ typedef struct motor {
     float        steps_per_unit;   /* steps per mm or degree    */
     uint16_t     speed;            /* RPM                       */
     uint16_t     speed_default;    /* RPM — restore after override */
+    uint16_t     speed_max;        /* RPM — max speed (fastest)   */
     bool         speed_override;   /* true = use override once   */
     uint8_t      accel;            /* 0-255, 0 = instant         */
 
@@ -42,7 +43,7 @@ typedef struct motor {
 
 esp_err_t motor_init(motor_t *m, uint8_t id, motor_type_t type,
                      const char *name, int32_t max_steps, int32_t min_steps,
-                     float steps_per_unit, uint16_t speed);
+                     float steps_per_unit, uint16_t speed, uint16_t speed_max);
 
 esp_err_t motor_probe(motor_t *m);
 esp_err_t motor_enable(motor_t *m);

@@ -27,9 +27,13 @@
 #define MOTOR_ID_TRACK_YAW    4   /* Tracker yaw axis                     */
 #define MOTOR_ID_TRACK_PITCH  5   /* Tracker pitch axis                   */
 
-/* ---- Motor speed defaults (MODBUS register 0x0385, RPM units) ---- */
-#define MOTOR_SPEED_DISTANCE    200
-#define MOTOR_SPEED_ANGLE       120
+/* ---- Motor speed defaults (RPM units) ---- */
+#define MOTOR_SPEED_DISTANCE        200
+#define MOTOR_SPEED_ANGLE           120
+
+/* ---- Motor max speed (RPM units) —— used when G-code has no F parameter ---- */
+#define MOTOR_SPEED_DISTANCE_MAX    500
+#define MOTOR_SPEED_ANGLE_MAX       300
 
 /* ---- Stepper resolution (steps per revolution) ---- */
 #define MOTOR_STEPS_PER_REV     3200
