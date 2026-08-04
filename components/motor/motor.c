@@ -33,6 +33,27 @@ static esp_err_t emm_recv(uint8_t addr, size_t *n, uint8_t *rx, size_t max,
     return ESP_ERR_INVALID_RESPONSE;
 }
 
+/* ---- QPos arm ---- */
+
+/* QPos_Control (0xFC, position-difference mode) does not carry speed
+ * inline, and this motor requires Set_QPos_Params (0xF1) to be re-armed
+ * before EVERY QPos_Control — without a fresh Set_QPos_Params the
+ * QPos_Control is silently ignored (only the first move after power-up
+ * works).  Send it every time with the current speed, and consume the
+ * motor's ACK so it can't collide with the following QPos_Control on
+ * the half-duplex RS485 bus. */
+static void qpos_arm(motor_t *m)
+{
+    rs485_flush_rx();
+    Emm_V5_Set_QPos_Params(m->id, m->speed, m->accel, 1, false);
+    {
+        uint8_t rx[16]; size_t n;
+        (void)emm_recv(m->id, &n, rx, sizeof(rx), 50);
+    }
+    rs485_flush_rx();
+    m->qpos_speed = m->speed;
+}
+
 /* ---- init ---- */
 
 esp_err_t motor_init(motor_t *m, uint8_t id, motor_type_t type,
@@ -48,6 +69,7 @@ esp_err_t motor_init(motor_t *m, uint8_t id, motor_type_t type,
     m->speed          = speed;
     m->speed_default  = speed;
     m->speed_max      = speed_max;
+    m->qpos_speed     = 0;          /* not yet configured on motor */
     m->speed_override = false;
     m->accel          = 50;
     m->target_pos     = 0;
@@ -98,7 +120,7 @@ esp_err_t motor_enable(motor_t *m)
     return ESP_OK;
 }
 
-/* ---- absolute move (position mode) ---- */
+/* ---- absolute move ---- */
 
 esp_err_t motor_move_absolute(motor_t *m, int32_t steps)
 {
@@ -113,17 +135,21 @@ esp_err_t motor_move_absolute(motor_t *m, int32_t steps)
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
-    ESP_LOGI(TAG, "%s → %ld steps (%u RPM, acc=%d)",
-             m->name, (long)steps, m->speed, m->accel);
-
-    /* Pos_Control: dir (0=CW, 1=CCW) + unsigned step count.
-     * raF=0: the clk parameter is the absolute target position
-     * (relative to the motor's origin, not relative to last target). */
-    {
-        uint8_t  dir    = (steps >= 0) ? 0 : 1;
-        uint32_t usteps = (uint32_t)(steps >= 0 ? steps : -steps);
-        Emm_V5_Pos_Control(m->id, dir, m->speed, m->accel, usteps, 0, false);
+    /* QPos_Control clk is an ABSOLUTE target position (verified on HW:
+     * sending the same clk twice does not move the second time, and
+     * Pos_Control raF=0 ACCUMULATES into the motor's target register).
+     * So send the absolute position directly. */
+    if (steps == m->current_pos) {
+        ESP_LOGI(TAG, "%s abs skipped — already at %ld", m->name, (long)steps);
+        m->target_pos = steps;
+        return ESP_OK;
     }
+
+    ESP_LOGI(TAG, "%s → abs %ld steps (cur %ld, %u RPM)",
+             m->name, (long)steps, (long)m->current_pos, m->speed);
+
+    qpos_arm(m);
+    Emm_V5_QPos_Control(m->id, steps);
 
     m->target_pos = steps;
     m->current_pos = steps;  /* optimistic — corrected by next read */
@@ -153,10 +179,11 @@ esp_err_t motor_move_relative(motor_t *m, int32_t delta)
         return ESP_OK;
     }
 
-    ESP_LOGI(TAG, "%s rel %+ld steps (%u RPM, acc=%d)",
-             m->name, (long)delta, m->speed, m->accel);
+    ESP_LOGI(TAG, "%s rel %+ld → abs %ld (cur %ld, %u RPM)",
+             m->name, (long)delta, (long)clamped, (long)m->current_pos, m->speed);
 
-    Emm_V5_QPos_Control(m->id, delta);
+    qpos_arm(m);
+    Emm_V5_QPos_Control(m->id, clamped);
 
     m->target_pos = clamped;
     m->current_pos = clamped;  /* optimistic — corrected by next read */
@@ -173,6 +200,7 @@ esp_err_t motor_request_absolute(motor_t *m, int32_t steps, uint16_t rpm)
 {
     if (!m) return ESP_ERR_INVALID_ARG;
     m->pending_abs = steps;
+    m->pending_abs_flag = true;
     if (rpm > 0) { m->speed = rpm; m->speed_override = true; }
     return ESP_OK;
 }
@@ -253,6 +281,18 @@ esp_err_t motor_read_position(motor_t *m)
         int32_t enc_pos = (rx[2] == 0x01) ? -(int32_t)raw : (int32_t)raw;
         /* encoder ticks → microsteps */
         m->current_pos = (int32_t)(((int64_t)enc_pos * 3200 + 32768) / 65536);
+
+        /* Clear "moving" once the motor has arrived at its target
+         * (within tolerance). LINEAR: 2 mm; ROTARY: 1°. */
+        if (m->moving) {
+            int32_t tol = (m->type == MOTOR_LINEAR)
+                        ? (int32_t)(m->steps_per_unit * 2.0f)
+                        : (int32_t)(m->steps_per_unit * 1.0f);
+            if (tol < 10) tol = 10;
+            int32_t err = m->target_pos - m->current_pos;
+            if (err < 0) err = -err;
+            if (err <= tol) m->moving = false;
+        }
     } else {
         char d[64]={0}; int o=0;
         for(int i=0;i<(int)n&&o<55;i++) o+=snprintf(d+o,sizeof(d)-o,"%02X ",rx[i]);
@@ -275,18 +315,21 @@ static void motor_poll_task(void *arg)
         bool did_move = false;
         for (int i = 0; i < poll_count; i++) {
             motor_t *m = poll_motors[i];
-            if (m && m->online && m->pending_abs != 0) {
-                int32_t target = m->pending_abs; m->pending_abs = 0;
+            if (!m || !m->online) continue;
+            /* This motor ignores new move commands while it is still
+             * executing — wait until it has arrived (moving cleared by
+             * motor_read_position) before sending the next one. */
+            if (m->moving) continue;
+
+            if (m->pending_abs_flag) {
+                int32_t target = m->pending_abs;
+                m->pending_abs = 0; m->pending_abs_flag = false;
                 ESP_LOGI(TAG, "poll: %s abs→%ld", m->name, (long)target);
                 motor_move_absolute(m, target);
                 if (m->speed_override) { m->speed = m->speed_default; m->speed_override = false; }
                 did_move = true;
                 vTaskDelay(pdMS_TO_TICKS(20));
-            }
-        }
-        for (int i = 0; i < poll_count; i++) {
-            motor_t *m = poll_motors[i];
-            if (m && m->online && m->pending_delta != 0) {
+            } else if (m->pending_delta != 0) {
                 int32_t d = m->pending_delta; m->pending_delta = 0;
                 ESP_LOGI(TAG, "poll: %s delta=%ld", m->name, (long)d);
                 motor_move_relative(m, d);

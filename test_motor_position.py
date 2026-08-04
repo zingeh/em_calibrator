@@ -2,6 +2,9 @@
 """
 Test: read actual position of all 5 motors via M1 query.
 
+Waits for all motors to stop moving (moving=0) before printing,
+so the reported pos reflects the settled position, not mid-motion.
+
 Usage:
   python test_motor_position.py
   python test_motor_position.py --host 192.168.123.181
@@ -9,6 +12,7 @@ Usage:
 
 import socket
 import argparse
+import time
 
 HOST = "192.168.123.181"
 PORT = 8888
@@ -38,6 +42,28 @@ def send(sock, cmd):
         return "(timeout)"
 
 
+def query(sock, motor_id):
+    return send(sock, f"M1 {motor_id}")
+
+
+def wait_for_idle(sock, motor_ids=(1, 2, 3, 4, 5), timeout=30.0, interval=0.3):
+    """Poll M1 until all motors report moving=0. Returns last responses."""
+    t0 = time.time()
+    last = {}
+    while time.time() - t0 < timeout:
+        busy = []
+        for mid in motor_ids:
+            resp = query(sock, mid)
+            last[mid] = resp
+            if "moving=1" in resp:
+                busy.append(mid)
+        if not busy:
+            return [last[m] for m in motor_ids]
+        time.sleep(interval)
+    print(f"wait_for_idle: timeout after {timeout}s, still moving: {busy}")
+    return [last.get(m, "?") for m in motor_ids]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Read all 5 motor positions")
     parser.add_argument("--host", default=HOST, help=f"IP address (default: {HOST})")
@@ -50,9 +76,13 @@ def main():
     print(send(s, "M115"))
     print("-" * 60)
 
-    # Read each motor
+    # Wait until all motors settle, then read each
+    print("Waiting for motors to settle ...")
+    wait_for_idle(s)
+    print("-" * 60)
+
     for mid in range(1, 6):
-        resp = send(s, f"M1 {mid}")
+        resp = query(s, mid)
         name = MOTOR_NAMES.get(mid, f"Motor {mid}")
         print(f"[{mid}] {name:15s} | {resp}")
 

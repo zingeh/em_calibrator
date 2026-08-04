@@ -27,6 +27,7 @@ typedef struct motor {
     uint16_t     speed;            /* RPM                       */
     uint16_t     speed_default;    /* RPM — restore after override */
     uint16_t     speed_max;        /* RPM — max speed (fastest)   */
+    uint16_t     qpos_speed;       /* RPM last set on motor        */
     bool         speed_override;   /* true = use override once   */
     uint8_t      accel;            /* 0-255, 0 = instant         */
 
@@ -34,7 +35,8 @@ typedef struct motor {
     int32_t      target_pos;
     int32_t      pos_offset;       /* fixed offset added to display (steps) */
     int32_t      pending_delta;    /* async: relative delta      */
-    int32_t      pending_abs;      /* async: absolute target, 0=none */
+    int32_t      pending_abs;      /* async: absolute target      */
+    bool         pending_abs_flag; /* true = pending_abs valid     */
     bool         moving;
     bool         online;
     bool         enabled;

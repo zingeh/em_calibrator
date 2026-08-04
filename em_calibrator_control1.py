@@ -90,26 +90,6 @@ def home_all(sock):
     return send(sock, "G28")
 
 
-def wait_for_idle(sock, motor_ids=(1, 2, 3, 4, 5), timeout=30.0, interval=0.3):
-    """Poll M1 until all given motors report moving=0.
-
-    Returns the list of last responses (one per motor)."""
-    t0 = time.time()
-    last = {}
-    while time.time() - t0 < timeout:
-        busy = []
-        for mid in motor_ids:
-            resp = query(sock, mid)
-            last[mid] = resp
-            if "moving=1" in resp:
-                busy.append(mid)
-        if not busy:
-            return [last[m] for m in motor_ids]
-        time.sleep(interval)
-    print(f"wait_for_idle: timeout after {timeout}s, still moving: {busy}")
-    return [last.get(m, "?") for m in motor_ids]
-
-
 # ──────────────────────────────────────────────────────
 #  Demo sequence (with speed overrides)
 # ──────────────────────────────────────────────────────
@@ -123,43 +103,27 @@ def demo(host=HOST):
 
     print("\n[1] Home all axes ...")
     print(home_all(s))
-    wait_for_idle(s)
-    time.sleep(0.5)
+    time.sleep(2)
 
-    print("[2] Distance → 20 cm (fast) ...")
-    print(dist_abs(s, 20.0, speed=400))
-    wait_for_idle(s, (1,))
-    time.sleep(0.5)
+    print("[2] Distance → -350 cm (fast) ...")
+    print(dist_abs(s, 35.0, speed=400))
+    time.sleep(2)
 
-    print("[3] Base yaw → +45° ...")
-    print(base_yaw(s, 45.0))
-    wait_for_idle(s, (2,))
-    time.sleep(0.5)
+    print("[3] Base yaw → +76° ...")
+    print(base_yaw(s, 76.0))
+    time.sleep(1.5)
 
-    print("[4] Base pitch → -30° (slow) ...")
-    print(base_pitch(s, -30.0, speed=1))
-    wait_for_idle(s, (3,), timeout=60.0)
-    time.sleep(0.5)
+    print("[4] Base pitch → -13.6° ...")
+    print(base_pitch(s, -13.6, speed=1))
+    time.sleep(1)
 
-    print("[5] Tracker yaw → -45° ...")
-    print(track_yaw(s, -45.0))
-    wait_for_idle(s, (4,))
-    time.sleep(0.5)
+    print("[7] Distance → -424.3 cm (slow) ...")
+    print(dist_abs(s, 42.43, speed=100))
+    time.sleep(2)
 
-    print("[6] Tracker pitch → -15° ...")
-    print(track_pitch(s, -15.0))
-    wait_for_idle(s, (5,))
-    time.sleep(0.5)
-
-    print("[7] Distance → 10 cm (slow) ...")
-    print(dist_abs(s, 10.0, speed=100))
-    wait_for_idle(s, (1,))
-    time.sleep(0.5)
-
-    print("[8] Return all to zero ...")
-    print(home_all(s))
-    wait_for_idle(s)
-    time.sleep(0.5)
+    #print("[8] Return all to zero ...")
+    #print(home_all(s))
+    #time.sleep(2)
 
     print("[9] Single motor query ...")
     for mid in range(1, 6):
