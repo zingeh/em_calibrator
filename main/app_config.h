@@ -41,13 +41,19 @@
 /* ---- Lead screw pitch: mm per full revolution ---- */
 #define LEAD_SCREW_PITCH_MM     10.0f
 
+/* ---- Yaw axis gear reduction (motor turns : output turns) ---- */
+#define YAW_GEAR_RATIO          5.625f
+
+/* ---- Pitch axis gear reduction (motor turns : output turns) ---- */
+#define PITCH_GEAR_RATIO        9.0f
+
 /* ---- Safety limits ---- */
 #define DISTANCE_MAX_MM         1200.0f
 #define DISTANCE_MIN_MM         0.0f
 #define YAW_MAX_DEG              180.0f
 #define YAW_MIN_DEG             -180.0f
-#define PITCH_MAX_DEG             0.0f
-#define PITCH_MIN_DEG           -110.0f
+#define PITCH_MAX_DEG            180.0f
+#define PITCH_MIN_DEG           -180.0f
 
 /* ---- UI refresh interval (ms) ---- */
 #define UI_REFRESH_MS          200

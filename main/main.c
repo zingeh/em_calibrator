@@ -58,39 +58,43 @@ void app_main(void)
 
     /* Steps-per-unit:
      *   distance: STEPS_PER_REV / LEAD_SCREW_PITCH_MM * 10 (for cm: 3200/10*10=3200)
-     *   angle:    STEPS_PER_REV / 360.0                                  */
-    float spu_dist = (float)MOTOR_STEPS_PER_REV / LEAD_SCREW_PITCH_MM;  /* steps/mm */
-    float spu_ang  = (float)MOTOR_STEPS_PER_REV / 360.0f;               /* steps/deg */
+     *   angle:    STEPS_PER_REV / 360.0
+     *   yaw:      × YAW_GEAR_RATIO   (5.625:1 → 5.625 motor revs = 1 output rev)
+     *   pitch:    × PITCH_GEAR_RATIO (9:1     → 9 motor revs     = 1 output rev) */
+    float spu_dist  = (float)MOTOR_STEPS_PER_REV / LEAD_SCREW_PITCH_MM; /* steps/mm */
+    float spu_ang   = (float)MOTOR_STEPS_PER_REV / 360.0f;              /* steps/deg */
+    float spu_yaw   = spu_ang * YAW_GEAR_RATIO;                          /* steps/deg */
+    float spu_pitch = spu_ang * PITCH_GEAR_RATIO;                        /* steps/deg */
 
     motor_init(&m_buf[0], MOTOR_ID_DISTANCE,   MOTOR_LINEAR,
                "Distance",  (int32_t)(DISTANCE_MAX_MM * spu_dist),
                (int32_t)(DISTANCE_MIN_MM * spu_dist),
                spu_dist, MOTOR_SPEED_DISTANCE, MOTOR_SPEED_DISTANCE_MAX);
-    m_buf[0].pos_offset = (int32_t)(100.0f * spu_dist);  /* 10 cm physical offset */
+    m_buf[0].pos_offset = (int32_t)(220.0f * spu_dist);  /* 22 cm physical offset */
     motors[0] = &m_buf[0];
 
     motor_init(&m_buf[1], MOTOR_ID_BASE_YAW,   MOTOR_ROTARY,
-               "Base Yaw",   (int32_t)(YAW_MAX_DEG   * spu_ang),
-               (int32_t)(YAW_MIN_DEG   * spu_ang),
-               spu_ang, MOTOR_SPEED_ANGLE, MOTOR_SPEED_ANGLE_MAX);
+               "Base Yaw",   (int32_t)(YAW_MAX_DEG   * spu_yaw),
+               (int32_t)(YAW_MIN_DEG   * spu_yaw),
+               spu_yaw, MOTOR_SPEED_ANGLE, MOTOR_SPEED_ANGLE_MAX);
     motors[1] = &m_buf[1];
 
     motor_init(&m_buf[2], MOTOR_ID_BASE_PITCH, MOTOR_ROTARY,
-               "Base Pitch", (int32_t)(PITCH_MAX_DEG * spu_ang),
-               (int32_t)(PITCH_MIN_DEG * spu_ang),
-               spu_ang, MOTOR_SPEED_ANGLE, MOTOR_SPEED_ANGLE_MAX);
+               "Base Pitch", (int32_t)(PITCH_MAX_DEG * spu_pitch),
+               (int32_t)(PITCH_MIN_DEG * spu_pitch),
+               spu_pitch, MOTOR_SPEED_ANGLE, MOTOR_SPEED_ANGLE_MAX);
     motors[2] = &m_buf[2];
 
     motor_init(&m_buf[3], MOTOR_ID_TRACK_YAW,  MOTOR_ROTARY,
-               "Track Yaw",  (int32_t)(YAW_MAX_DEG   * spu_ang),
-               (int32_t)(YAW_MIN_DEG   * spu_ang),
-               spu_ang, MOTOR_SPEED_ANGLE, MOTOR_SPEED_ANGLE_MAX);
+               "Track Yaw",  (int32_t)(YAW_MAX_DEG   * spu_yaw),
+               (int32_t)(YAW_MIN_DEG   * spu_yaw),
+               spu_yaw, MOTOR_SPEED_ANGLE, MOTOR_SPEED_ANGLE_MAX);
     motors[3] = &m_buf[3];
 
     motor_init(&m_buf[4], MOTOR_ID_TRACK_PITCH,MOTOR_ROTARY,
-               "Track Pitch",(int32_t)(PITCH_MAX_DEG * spu_ang),
-               (int32_t)(PITCH_MIN_DEG * spu_ang),
-               spu_ang, MOTOR_SPEED_ANGLE, MOTOR_SPEED_ANGLE_MAX);
+               "Track Pitch",(int32_t)(PITCH_MAX_DEG * spu_pitch),
+               (int32_t)(PITCH_MIN_DEG * spu_pitch),
+               spu_pitch, MOTOR_SPEED_ANGLE, MOTOR_SPEED_ANGLE_MAX);
     motors[4] = &m_buf[4];
 
     /* ---------- LVGL + UI ---------- */

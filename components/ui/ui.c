@@ -72,11 +72,13 @@ static void dot_set(lv_obj_t *d, bool on) {
 #define CB(idx,suf,dlt) \
 static void _cb_##idx##_##suf(lv_event_t *e) { \
     (void)e; if(g_motors&&g_motors[idx]) motor_request_relative(g_motors[idx],dlt); }
-/* Microsteps (3200/rev): 1cm=3200, 10cm=32000, 100cm=320000, ±90°=800 */
+/* Microsteps (3200/rev): 1cm=3200, 10cm=32000, 100cm=320000,
+ * yaw ±90°=4500 (50 steps/deg, 5.625:1 gear),
+ * pitch ±90°=7200 (80 steps/deg, 9:1 gear) */
 CB(0,m100,-320000) CB(0,m10,-32000) CB(0,m1,-3200)
 CB(0,p1,3200)      CB(0,p10,32000)  CB(0,p100,320000)
-CB(1,m90,-800) CB(1,p90,800)  CB(2,m90,-800) CB(2,p90,800)
-CB(3,m90,-800) CB(3,p90,800)  CB(4,m90,-800) CB(4,p90,800)
+CB(1,m90,-4500) CB(1,p90,4500)  CB(2,m90,-7200) CB(2,p90,7200)
+CB(3,m90,-4500) CB(3,p90,4500)  CB(4,m90,-7200) CB(4,p90,7200)
 #undef CB
 
 static void cb_reset(lv_event_t *e) {
